@@ -1,11 +1,11 @@
 # irap-vietnam-360
 
-This project converts fisheye video sequences to perspective projection videos or images using GPS track data, saving one image every `N` meters along the path.
+This project converts fisheye video sequences to perspective projection videos or images using GPS track data, saving one image every distance step along the path.
 
 ## Usage
 
 ```sh
-python generate_image_dataset.py input output --distance_step 10.0 --fov_h 127 --output_width 384 --output_height 288 --tilt 12
+python -m irap_vietnam_360.generate_image_dataset input output --distance_step 10.0 --fov_h 127 --output_width 384 --output_height 288 --tilt 12
 ```
 
 - `input`: Root directory containing subfolders, each with a fisheye video (`.insv`) and a corresponding GPS track file (`.gpx`).

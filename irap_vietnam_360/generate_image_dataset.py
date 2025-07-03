@@ -5,8 +5,8 @@ import numpy as np
 
 from tqdm import tqdm
 
-from gpx_utils import GPXTrack
-from fisheye_utils import get_fisheye_to_perspective_converter, iterate_video_frames
+from .gpx_utils import GPXTrack
+from .fisheye_utils import get_fisheye_to_perspective_converter, iterate_video_frames
 
 
 def extract_frames_by_distance(
