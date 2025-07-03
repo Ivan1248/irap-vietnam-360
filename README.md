@@ -47,7 +47,7 @@ output/
 
 Each output subfolder matches the input and contains PNG images named by their frame index, corresponding to the extracted frames at each distance step.
 
-# To do
+## To do
 
 - The synchronization between video duration and GPS track duration is currently handled by a simple rescaling hack. This should be improved for better alignment.
 - The center of the field of view can be only be tilted manually.
