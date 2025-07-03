@@ -6,7 +6,7 @@ import typing as T
 from pathlib import Path
 from functools import partial
 
-DEFAULT_FISHEYE_RADIUS_FACTOR = 0.95
+DEFAULT_FISHEYE_RADIUS_FACTOR = 0.94
 
 
 def get_aspect_ratio_from_fov(
@@ -43,12 +43,12 @@ def create_fisheye_to_perspective_map(
     input_size,
     output_size=None,
     fov=(120, 120),
+    fov_center=(0, 0),
     fisheye_center=None,
     fisheye_radius_factor=DEFAULT_FISHEYE_RADIUS_FACTOR,
 ):
     """
     Create mapping tables for fisheye to perspective projection
-
     Args:
         input_width, input_height: Input image dimensions
         fov_h, fov_v: Horizontal and vertical field of view in degrees
@@ -80,6 +80,9 @@ def create_fisheye_to_perspective_map(
     perspective_cx = output_width / 2
     perspective_cy = output_height / 2
 
+    pitch_rad = math.radians(-fov_center[1])
+    assert fov_center[0] == 0, "Horizontal FOV center offset is not supported"
+    cos_p, sin_p = math.cos(pitch_rad), math.sin(pitch_rad)
     for y in range(output_height):
         for x in range(output_width):
             # Perspective projection: convert pixel coordinates to normalized image coordinates
@@ -97,6 +100,11 @@ def create_fisheye_to_perspective_map(
             ray_y /= ray_length
             ray_z /= ray_length
 
+            # apply downward tilt
+            ray_y, ray_z = (
+                ray_y * cos_p - ray_z * sin_p,
+                ray_y * sin_p + ray_z * cos_p,
+            )
             # Convert 3D ray to fisheye coordinates
             # Calculate angle from optical axis (Z-axis)
             theta = math.acos(max(-1, min(1, ray_z)))  # Clamp to avoid numerical errors
@@ -287,9 +295,10 @@ def get_fisheye_to_perspective_converter(
     *,
     fov_h=120,
     fov_v=None,
+    fov_center=(0, -5),
     output_size=None,
     output_aspect_ratio=None,
-    fisheye_radius_factor=0.95,
+    fisheye_radius_factor=DEFAULT_FISHEYE_RADIUS_FACTOR,
     mode="perspective",
 ):
     """
@@ -324,7 +333,7 @@ def get_fisheye_to_perspective_converter(
                 )
             )
         map, output_size = create_fisheye_to_perspective_map(
-            output_size=output_size, fov=(fov_h, fov_v), **map_kwargs
+            output_size=output_size, fov=(fov_h, fov_v), fov_center=fov_center, **map_kwargs
         )
         print(f"Fisheye to perspective: {output_size[0]}x{output_size[1]}, FOV: {fov_h}°x{fov_v}°")
 
@@ -378,9 +387,9 @@ def convert_video(
             out = cv2.VideoWriter(output_path, **writer_args)
             print(f"Output: {out_frame_size[0]}x{out_frame_size[1]}, {fps} FPS")
         out.write(out_frame)
-        png_path = (Path(output_path).with_suffix("")) / f"{frame_index:06d}.png"
-        png_path.parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(png_path), out_frame)
+        # png_path = (Path(output_path).with_suffix("")) / f"{frame_index:07d}.png"
+        # png_path.parent.mkdir(parents=True, exist_ok=True)
+        # cv2.imwrite(str(png_path), out_frame)
     cap.release()
     if out is not None:
         out.release()
@@ -391,7 +400,7 @@ def convert_video(
 
 # Example usage
 if __name__ == "__main__":
-    fisheye_radius_factor = 1.0
+    fisheye_radius_factor = 0.94
 
     # Single fisheye to perspective with custom aspect ratio and FOV
     convert_video(
@@ -401,10 +410,11 @@ if __name__ == "__main__":
             get_fisheye_to_perspective_converter,
             fov_h=127,  # GoPro Hero 4 medium: 127°
             fov_v=None,
-            output_size=(384, 255),
+            fov_center=(0, 0),
+            output_size=(384, 288),
             fisheye_radius_factor=fisheye_radius_factor,
         ),
-        frame_iter_args=dict(end_time=10),
+        frame_iter_args=dict(start_time=80, end_time=150),
     )
 
     # Single fisheye to perspective with custom aspect ratio and FOV
