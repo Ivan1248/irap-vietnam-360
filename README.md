@@ -5,7 +5,7 @@ This project converts fisheye video sequences to perspective projection videos o
 ## Usage
 
 ```sh
-python -m irap_vietnam_360.generate_image_dataset input output --distance_step 10.0 --fov_h 127 --output_width 384 --output_height 288 --tilt 12
+python -m irap_vietnam_360.generate_image_dataset input output --distance_step 10 --fov_h 127 --output_width 384 --output_height 288 --tilt 12
 ```
 
 - `input`: Root directory containing subfolders, each with a fisheye video (`.insv`) and a corresponding GPS track file (`.gpx`).
