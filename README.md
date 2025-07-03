@@ -17,7 +17,7 @@ python generate_image_dataset.py input output --distance_step 10.0 --fov_h 127 -
 - `--tilt`: Vertical tilt angle (in degrees) for the center of the field of view. Positive tilts the view upward (default: 0.0).
 - `--fisheye_radius_factor`: Fisheye radius as a fraction of the image radius, for tuning the effective fisheye circle (default: 0.94).
 
-## Input Directory Structure
+### Input directory structure
 
 ```
 input/
@@ -32,13 +32,13 @@ input/
 
 Each subfolder represents a sequence and must contain one `.insv` video and one `.gpx` file.
 
-## Output Directory Structure
+### Output directory structure
 
 ```
 output/
   ├── 20231223_unit1_58_59_836/
   │     ├── 0000000.png   # Extracted perspective images
-  │     ├── 0000010.png
+  │     ├── 0000127.png
   │     └── ...
   ├── 20241210_unit1_32/
   │     └── ...
