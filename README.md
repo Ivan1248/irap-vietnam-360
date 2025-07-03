@@ -50,6 +50,7 @@ Each output subfolder matches the input and contains PNG images named by their f
 ## To do
 
 - The synchronization between video duration and GPS track duration is currently handled by a simple rescaling hack. This should be improved for better alignment.
-- The center of the field of view can be only be tilted manually.
-- The anti-aliasing method should be checked.
-- The perspective conversion code should be checked.
+- Check anti-aliasing and interpolation.
+- Check the perspective conversion code.
+- The camera usually does not point exactly in the movement direction and sometimes points backwards. The center of the field of view can be only be tilted manually. Add recognition of the road direction or the movement direction (including whether the camera points backward)?
+- Do something about head movement (helmet mounted cameras)?
