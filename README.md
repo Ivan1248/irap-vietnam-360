@@ -5,16 +5,18 @@ This project converts fisheye video sequences to perspective projection videos o
 ## Usage
 
 ```sh
-python -m irap_vietnam_360.generate_image_dataset input output --distance_step 10 --fov_h 127 --output_width 384 --output_height 288 --tilt 12
+python -m irap_vietnam_360.generate_image_dataset input output --distance_step 10 --fov_h 127 --output_width 384 --output_height 288 --pitch 12
 ```
 
 - `input`: Root directory containing subfolders, each with a fisheye video (`.insv`) and a corresponding GPS track file (`.gpx`).
 - `output`: Directory where extracted images will be saved, mirroring the input folder structure.
 - `--distance_step`: Distance in meters between extracted frames (default: 10).
-- `--fov_h`: Horizontal field of view for the perspective output (default: 127).
+- `--fov_h`: Horizontal field of view for the perspective output, in degrees (default: 127).
 - `--output_width`: Output image width in pixels (default: 384).
 - `--output_height`: Output image height in pixels (default: 288).
-- `--tilt`: Vertical tilt angle (in degrees) for the center of the field of view. Positive tilts the view upward (default: 0.0).
+- `--yaw`: Horizontal rotation angle (in degrees) of the virtual camera (default: 0.0).
+- `--pitch`: Vertical rotation angle (in degrees) of the virtual camera; positive tilts the view upward (default: 0.0).
+- `--roll`: Optical axis rotation angle (in degrees) of the virtual camera (default: 0.0).
 - `--fisheye_radius_factor`: Fisheye radius as a fraction of the image radius, for tuning the effective fisheye circle (default: 0.94).
 
 ### Input directory structure
@@ -52,5 +54,5 @@ Each output subfolder matches the input and contains PNG images named by their f
 - The synchronization between video duration and GPS track duration is currently handled by a simple rescaling hack. This should be improved for better alignment.
 - Check anti-aliasing and interpolation.
 - Check the perspective conversion code.
-- The camera usually does not point exactly in the movement direction and sometimes points backwards. The center of the field of view can be only be tilted manually. Add recognition of the road direction or the movement direction (including whether the camera points backward)?
+- The camera usually does not point exactly in the movement direction and sometimes points backwards. The center of the field of view can only be changed by manually setting the pitch, yaw and roll angles. Add recognition of the road direction or the movement direction (including whether the camera points backward)?
 - Do something about head movement (helmet mounted cameras)?

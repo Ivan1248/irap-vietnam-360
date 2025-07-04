@@ -1,8 +1,4 @@
 *.pyc
 
-*.gpx
-*.lrv
-*.insv
-*.db
-*.png
-*.mp4
+input
+output

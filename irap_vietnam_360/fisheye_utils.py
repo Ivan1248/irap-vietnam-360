@@ -36,24 +36,80 @@ def get_perspective_output_size(
 
 
 def get_fov_v(aspect_ratio, fov_h):
+    """Calculates the vertical field of view (FOV) given an aspect ratio and horizontal FOV.
+
+    Args:
+        aspect_ratio (float): Aspect ratio (width / height).
+        fov_h (float): Horizontal field of view in degrees.
+
+    Returns:
+        float: Vertical field of view in degrees.
+    """
     return 2 * math.degrees(math.atan(math.tan(math.radians(fov_h / 2)) / aspect_ratio))
+
+
+def get_axial_rotation_matrix(axis, angle):
+    """Returns a rotation matrix for a given axis ('x', 'y', or 'z') and angle in degrees.
+
+    Args:
+        axis (str): Axis of rotation ('x', 'y', or 'z').
+        angle (float): Angle in degrees.
+
+    Returns:
+        np.ndarray: 3x3 rotation matrix.
+    """
+    angle_rad = math.radians(angle)
+    c = math.cos(angle_rad)
+    s = math.sin(angle_rad)
+    if axis == "x":
+        return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
+    elif axis == "y":
+        return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+    elif axis == "z":
+        return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+    else:
+        raise ValueError("Axis must be one of 'x', 'y', or 'z'.")
+
+
+def get_rotation_matrix(yaw, pitch, roll):
+    """Returns a combined rotation matrix for yaw, pitch, and roll angles in degrees.
+    The order of rotations is yaw (Y), pitch (X), roll (Z).
+
+    Returns:
+        np.ndarray: 3x3 combined rotation matrix.
+    """
+    Rz = get_axial_rotation_matrix("z", roll)  # Roll around Z-axis
+    Rx = get_axial_rotation_matrix("x", pitch)  # Pitch around X-axis
+    Ry = get_axial_rotation_matrix("y", yaw)  # Yaw around Y-axis
+    return Rz @ Rx @ Ry  # Combined rotation matrix
 
 
 def create_fisheye_to_perspective_map(
     input_size,
     output_size=None,
-    fov=(120, 120),
-    fov_center=(0, 0),
+    fov=(120.0, 120.0),
+    yaw_pitch=(0.0, 0.0),
+    roll=0.0,
     fisheye_center=None,
     fisheye_radius_factor=DEFAULT_FISHEYE_RADIUS_FACTOR,
 ):
     """
-    Create mapping tables for fisheye to perspective projection
+    Creates mapping tables for remapping a fisheye image to a perspective projection with arbitrary camera orientation.
+
     Args:
-        input_width, input_height: Input image dimensions
-        fov_h, fov_v: Horizontal and vertical field of view in degrees
-        fisheye_center_x, fisheye_center_y: Fisheye circle center (None = auto-detect as image center)
-        fisheye_radius_factor: Fisheye radius as fraction of min(center_x, center_y)
+        input_size (tuple): (width, height) of the input fisheye image.
+        output_size (tuple, optional): (width, height) of the output perspective image. If None, it will be computed.
+        fov (tuple): (horizontal_fov, vertical_fov) in degrees for the output perspective view.
+        yaw_pitch (tuple): (yaw, pitch) in degrees. Yaw: left/right, Pitch: up/down.
+        roll (float): Roll angle (twist) in degrees.
+        fisheye_center (tuple, optional): (x, y) coordinates of the fisheye circle center in the input image. If None, the image center is used.
+        fisheye_radius_factor (float): Fraction of min(center_x, center_y) to use as the fisheye radius.
+
+    Returns:
+        tuple: (map_x, map_y), output_size
+            map_x (np.ndarray): X coordinates for remapping.
+            map_y (np.ndarray): Y coordinates for remapping.
+            output_size (tuple): (width, height) of the output image.
     """
     input_width, input_height = input_size
     fov_h, fov_v = fov
@@ -66,9 +122,6 @@ def create_fisheye_to_perspective_map(
         fisheye_center = (input_width / 2, input_height / 2)
     fisheye_cx, fisheye_cy = fisheye_center
 
-    map_x = np.zeros((output_height, output_width), dtype=np.float32)
-    map_y = np.zeros((output_height, output_width), dtype=np.float32)
-
     # Fisheye parameters
     fisheye_radius = min(fisheye_cx, fisheye_cy) * fisheye_radius_factor
 
@@ -80,50 +133,53 @@ def create_fisheye_to_perspective_map(
     perspective_cx = output_width / 2
     perspective_cy = output_height / 2
 
-    pitch_rad = math.radians(-fov_center[1])
-    assert fov_center[0] == 0, "Horizontal FOV center offset is not supported"
-    cos_p, sin_p = math.cos(pitch_rad), math.sin(pitch_rad)
-    for y in range(output_height):
-        for x in range(output_width):
-            # Perspective projection: convert pixel coordinates to normalized image coordinates
-            x_norm = (x - perspective_cx) / focal_length_x
-            y_norm = (y - perspective_cy) / focal_length_y
+    # Combined rotation: R = Rz @ Rx @ Ry (yaw, then pitch, then roll)
+    R = get_rotation_matrix(*yaw_pitch, roll)
 
-            # Convert to 3D ray direction (perspective projection)
-            ray_x = x_norm
-            ray_y = y_norm
-            ray_z = 1.0  # Looking down positive Z axis
+    # Create meshgrid for output image coordinates
+    y, x = np.indices((output_height, output_width))  # shape (H, W)
+    x_norm = (x - perspective_cx) / focal_length_x
+    y_norm = (y - perspective_cy) / focal_length_y
 
-            # Normalize the ray
-            ray_length = math.sqrt(ray_x**2 + ray_y**2 + ray_z**2)
-            ray_x /= ray_length
-            ray_y /= ray_length
-            ray_z /= ray_length
+    # Convert to 3D ray yaw_pitch (perspective projection)
+    ray_x = x_norm
+    ray_y = y_norm
+    ray_z = np.ones_like(ray_x)
 
-            # apply downward tilt
-            ray_y, ray_z = (
-                ray_y * cos_p - ray_z * sin_p,
-                ray_y * sin_p + ray_z * cos_p,
-            )
-            # Convert 3D ray to fisheye coordinates
-            # Calculate angle from optical axis (Z-axis)
-            theta = math.acos(max(-1, min(1, ray_z)))  # Clamp to avoid numerical errors
+    # Normalize the ray
+    ray_length = np.sqrt(ray_x**2 + ray_y**2 + ray_z**2)
+    ray_x /= ray_length
+    ray_y /= ray_length
+    ray_z /= ray_length
 
-            if theta > 0 and theta < math.pi / 2:  # Only map rays in front hemisphere
-                # For equidistant fisheye projection: r = f * theta
-                rho = fisheye_radius * theta / (math.pi / 2)
+    # Stack and rotate rays
+    rays = np.stack([ray_x, ray_y, ray_z], axis=-1)  # shape (H, W, 3)
+    rays_rot = np.einsum("...j,ij->...i", rays, R)  # shape (H, W, 3)
+    ray_x_rot, ray_y_rot, ray_z_rot = [rays_rot[..., i] for i in (0, 1, 2)]
 
-                # Calculate azimuth angle
-                phi = math.atan2(ray_y, ray_x)
+    # Calculate angle from optical axis (Z-axis)
+    theta = np.arccos(np.clip(ray_z_rot, -1, 1))
 
-                # Convert to fisheye image coordinates
-                fisheye_x = fisheye_cx + rho * math.cos(phi)
-                fisheye_y = fisheye_cy + rho * math.sin(phi)
+    # For equidistant fisheye projection: r = f * theta
+    rho = fisheye_radius * theta / (np.pi / 2)
 
-                # Check bounds
-                if 0 <= fisheye_x < input_width and 0 <= fisheye_y < input_height:
-                    map_x[y, x] = fisheye_x
-                    map_y[y, x] = fisheye_y
+    # Calculate azimuth angle
+    phi = np.arctan2(ray_y_rot, ray_x_rot)
+
+    # Convert to fisheye image coordinates
+    fisheye_x = fisheye_cx + rho * np.cos(phi)
+    fisheye_y = fisheye_cy + rho * np.sin(phi)
+
+    # Only map rays in front hemisphere and within input bounds
+    valid = (theta > 0) & (theta < np.pi / 2)
+    valid &= (
+        (fisheye_x >= 0) & (fisheye_x < input_width) & (fisheye_y >= 0) & (fisheye_y < input_height)
+    )
+
+    map_x = np.zeros((output_height, output_width), dtype=np.float32)
+    map_y = np.zeros_like(map_x)
+    map_x[valid] = fisheye_x[valid].astype(np.float32)
+    map_y[valid] = fisheye_y[valid].astype(np.float32)
 
     return (map_x, map_y), output_size
 
@@ -135,14 +191,20 @@ def create_dual_fisheye_to_equirectangular_map(
     fisheye_radius_factor=DEFAULT_FISHEYE_RADIUS_FACTOR,
     front_fisheye_position="left",
 ):
-    """
-    Create mapping tables for dual fisheye to equirectangular projection
+    """Creates mapping tables for dual fisheye to equirectangular projection.
 
     Args:
-        input_width, input_height: Input image dimensions
-        output_aspect_ratio: Output aspect ratio (2.0 = standard equirectangular)
-        fisheye_radius_factor: Fisheye radius as fraction of available space
-        front_fisheye_position: 'right'/'left' for side_by_side, 'top'/'bottom' for top_bottom
+        input_width (int): Input image width.
+        input_height (int): Input image height.
+        output_aspect_ratio (float): Output aspect ratio (2.0 = standard equirectangular).
+        fisheye_radius_factor (float): Fisheye radius as fraction of available space.
+        front_fisheye_position (str): 'right'/'left' for side_by_side, 'top'/'bottom' for top_bottom.
+
+    Returns:
+        tuple: (map_x, map_y, output_size)
+            map_x (np.ndarray): X coordinates for remapping.
+            map_y (np.ndarray): Y coordinates for remapping.
+            output_size (tuple): (width, height) of the output image.
     """
     # Auto-compute output dimensions
     output_width = input_width
@@ -203,6 +265,18 @@ def create_dual_fisheye_to_equirectangular_map(
 
 
 def remap_frame(frame, map, out_size, interpolation=cv2.INTER_LINEAR, antialias="auto"):
+    """Remaps a frame using the provided mapping tables, with optional antialiasing.
+
+    Args:
+        frame (np.ndarray): Input image/frame.
+        map (tuple): (map_x, map_y) mapping tables.
+        out_size (tuple): (width, height) of the output image.
+        interpolation (int): OpenCV interpolation flag.
+        antialias (str|int): Antialiasing mode ('auto', 'none', 'gaussian', or integer upsampling factor).
+
+    Returns:
+        np.ndarray: Remapped output image.
+    """
     assert antialias in ["auto", "none", "gaussian", 2, 4, 8, 16]
 
     # Apply smoothing before downsampling if output size is smaller than input
@@ -248,11 +322,20 @@ def remap_frame(frame, map, out_size, interpolation=cv2.INTER_LINEAR, antialias=
 def iterate_video_frames(
     cap, *, start_time=0, end_time=None, frames=None, pbar_f=partial(tqdm, desc="Processing frames")
 ):
-    """
-    Generator that yields (frame_index, frame) from a cv2.VideoCapture object.
+    """Generator that yields (frame_index, frame) from a cv2.VideoCapture object.
     Handles seeking, start/end time, and non-contiguous frame indices.
     Optionally wraps the frame index iterator with a progress bar or other factory.
     Supports frames as None, list/array, or a slice object.
+
+    Args:
+        cap (cv2.VideoCapture): OpenCV video capture object.
+        start_time (float): Start time in seconds.
+        end_time (float, optional): End time in seconds.
+        frames (list|slice|None): Specific frame indices or slice to process.
+        pbar_f (callable): Progress bar factory or None.
+
+    Yields:
+        tuple: (frame_index (int), frame (np.ndarray))
     """
     fps = int(cap.get(cv2.CAP_PROP_FPS))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -293,28 +376,30 @@ def iterate_video_frames(
 def get_fisheye_to_perspective_converter(
     input_size,
     *,
-    fov_h=120,
+    fov_h=120.0,
     fov_v=None,
-    fov_center=(0, -5),
+    yaw_pitch=(0.0, 0.0),
+    roll=0.0,
     output_size=None,
     output_aspect_ratio=None,
     fisheye_radius_factor=DEFAULT_FISHEYE_RADIUS_FACTOR,
     mode="perspective",
 ):
-    """
-    Process Insta360 fisheye video to perspective or equirectangular.
+    """Returns a frame converter function for Insta360 fisheye video to perspective or equirectangular.
 
     Args:
-        input_path: Path to input video
-        output_path: Path to output video
-        fov_h, fov_v: Horizontal and vertical field of view in degrees (perspective mode)
-        output_aspect_ratio: Output aspect ratio (None = 16:9 for single, 2:1 for dual)
-        fisheye_center_x, fisheye_center_y: Fisheye center (None = image center)
-        fisheye_radius_factor: Fisheye radius factor
-        start_time: Start time in seconds (None = from beginning)
-        end_time: End time in seconds (None = till end)
-        mode: 'perspective' (default) or 'equirectangular'
-        front_fisheye_position: For dual fisheye equirectangular mode
+        input_size (tuple): (width, height) of the input image.
+        fov_h (float): Horizontal field of view in degrees (perspective mode).
+        fov_v (float, optional): Vertical field of view in degrees (perspective mode).
+        yaw_pitch (tuple): (yaw, pitch) in degrees.
+        roll (float): Roll angle (twist) in degrees.
+        output_size (tuple, optional): (width, height) of the output image.
+        output_aspect_ratio (float, optional): Output aspect ratio.
+        fisheye_radius_factor (float): Fisheye radius factor.
+        mode (str): 'perspective' (default) or 'equirectangular'.
+
+    Returns:
+        Callable: Function that converts a frame (np.ndarray) to the desired projection.
     """
     map_kwargs = dict(input_size=input_size, fisheye_radius_factor=fisheye_radius_factor)
 
@@ -333,7 +418,11 @@ def get_fisheye_to_perspective_converter(
                 )
             )
         map, output_size = create_fisheye_to_perspective_map(
-            output_size=output_size, fov=(fov_h, fov_v), fov_center=fov_center, **map_kwargs
+            output_size=output_size,
+            fov=(fov_h, fov_v),
+            yaw_pitch=yaw_pitch,
+            roll=roll,
+            **map_kwargs,
         )
         print(f"Fisheye to perspective: {output_size[0]}x{output_size[1]}, FOV: {fov_h}°x{fov_v}°")
 
@@ -349,15 +438,17 @@ def convert_video(
     frame_iter_args: dict = dict(start_time=0, end_time=None, frames=None),
     video_writer_args: dict = None,
 ):
-    """
-    Convert a video using a frame converter function and save the result.
+    """Converts a video using a frame converter function and save the result.
 
     Args:
-        input_path: Path to input video file.
-        output_path: Path to output video file.
-        frame_converter_f: Function that returns a frame converter (should accept input_size as kwarg).
-        frame_iter_args: Arguments for iterate_video_frames.
-        video_writer_args: Optional dict for cv2.VideoWriter (e.g., fourcc, fps, frameSize).
+        input_path (str): Path to input video file.
+        output_path (str): Path to output video file.
+        frame_converter_f (Callable): Function that returns a frame converter (should accept input_size as kwarg).
+        frame_iter_args (dict): Arguments for iterate_video_frames.
+        video_writer_args (dict, optional): Optional dict for cv2.VideoWriter (e.g., fourcc, fps, frameSize).
+
+    Returns:
+        None
     """
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
@@ -410,7 +501,8 @@ if __name__ == "__main__":
             get_fisheye_to_perspective_converter,
             fov_h=127,  # GoPro Hero 4 medium: 127°
             fov_v=None,
-            fov_center=(0, 0),
+            yaw_pitch=(0, 0),
+            roll=0.,
             output_size=(384, 288),
             fisheye_radius_factor=fisheye_radius_factor,
         ),

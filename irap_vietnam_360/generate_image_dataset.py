@@ -18,7 +18,8 @@ def extract_frames_by_distance(
     perspective_fov_h: float = 127.0,
     output_size: tuple = (384, 256),
     fisheye_radius_factor: float = 0.94,
-    fov_center: tuple = (0, 0),
+    yaw_pitch: tuple = (0.0, 0.0),
+    roll: float = 0.0,
 ):
     """
     For each subfolder in root_dir, extract frames from the fisheye video at every `distance_step` meters
@@ -42,7 +43,7 @@ def extract_frames_by_distance(
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
         with open(gpx_path, "r", encoding="utf-8") as f:
-            track = GPXTrack(gpx_content=f.read())
+            track = GPXTrack(f.read())
 
         print(
             f"Warning: GPS path duration: {track.times[-1]}, video duration: {total_frames / fps}. Rescaling GPS path duration."
@@ -59,7 +60,8 @@ def extract_frames_by_distance(
             fov_h=perspective_fov_h,
             output_size=output_size,
             fisheye_radius_factor=fisheye_radius_factor,
-            fov_center=fov_center,
+            yaw_pitch=yaw_pitch,
+            roll=roll,
         )
 
         out_seq_dir = output_dir / input_seq_dir.name
@@ -70,7 +72,9 @@ def extract_frames_by_distance(
             out_frame = frame_converter(frame)
             cv2.imwrite(out_seq_dir / f"{frame_idx:07d}.png", out_frame)
 
-        print(f"Processed {input_seq_dir.name}: {len(frame_numbers)} frames saved in {out_seq_dir}.")
+        print(
+            f"Processed {input_seq_dir.name}: {len(frame_numbers)} frames saved in {out_seq_dir}."
+        )
         cap.release()
 
 
@@ -97,8 +101,21 @@ if __name__ == "__main__":
     )
     parser.add_argument("--output_width", type=int, default=384, help="Output image width.")
     parser.add_argument("--output_height", type=int, default=288, help="Output image height.")
-    parser.add_argument("--fisheye_radius_factor", type=float, default=0.94, help="Fisheye radius factor (fraction of image radius).")
-    parser.add_argument("--tilt", type=float, default=0.0, help="Vertical tilt angle (degrees) for FOV center.")
+    parser.add_argument(
+        "--fisheye_radius_factor",
+        type=float,
+        default=0.94,
+        help="Fisheye radius factor (fraction of image radius).",
+    )
+    parser.add_argument(
+        "--yaw", type=float, default=0.0, help="Horizontal rotation angle (degrees)."
+    )
+    parser.add_argument(
+        "--pitch", type=float, default=0.0, help="Vertical rotation angle (degrees)."
+    )
+    parser.add_argument(
+        "--roll", type=float, default=0.0, help="Optical axis rotation angle (degrees)."
+    )
     args = parser.parse_args()
 
     extract_frames_by_distance(
@@ -108,5 +125,6 @@ if __name__ == "__main__":
         perspective_fov_h=args.fov_h,
         output_size=(args.output_width, args.output_height),
         fisheye_radius_factor=args.fisheye_radius_factor,
-        fov_center=(0, -args.tilt),
+        yaw_pitch=(args.yaw, args.pitch),
+        roll=args.roll,
     )
