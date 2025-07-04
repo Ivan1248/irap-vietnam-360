@@ -2,52 +2,64 @@ from datetime import datetime
 import math
 from typing import List
 import xml.etree.ElementTree as ET
+import dataclasses as dc
 
 import numpy as np
 
 
-def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+def haversine_distance(
+    lat1: float, lon1: float, lat2: float, lon2: float, sphere_radius: float = 6371000
+) -> float:
     """
-    Calculate the great circle distance between two points on Earth in meters.
+    Calculate the great circle distance between two points on the Earth.
+
+    Args:
+        lat1 (float): Latitude of the first point in decimal degrees.
+        lon1 (float): Longitude of the first point in decimal degrees.
+        lat2 (float): Latitude of the second point in decimal degrees.
+        lon2 (float): Longitude of the second point in decimal degrees.
+
+    Returns:
+        float: Distance between the two points in meters.
+
+    References:
+        - https://stackoverflow.com/questions/4913349/haversine-formula-in-python-bearing-and-distance-between-two-gps-points
     """
-    # Convert decimal degrees to radians
     lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
 
-    # Haversine formula
     dlat = lat2 - lat1
     dlon = lon2 - lon1
     a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
     c = 2 * math.asin(math.sqrt(a))
+    return c * sphere_radius
 
-    # Radius of earth in meters
-    r = 6371000
-    return c * r
+
+@dc.dataclass
+class TrackPoint:
+    lat: float
+    lon: float
+    timestamp: str
 
 
 def _parse_gpx_root(root) -> List[dict]:
+    """Parses GPX root element and extract track points. Returns list of track points with lat, lon,
+    and timestamp.
     """
-    Parse GPX root element and extract track points.
-    Returns list of track points with lat, lon, and timestamp.
-    """
-    # Define namespace
-    ns = {"gpx": "http://www.topografix.com/GPX/1/1"}
+    ns = {"gpx": "http://www.topografix.com/GPX/1/1"}  # GPX 1.1 namespace
 
     # Find all track points
-    track_points = []
-    for trkpt in root.findall(".//gpx:trkpt", ns):
-        lat = float(trkpt.get("lat"))
-        lon = float(trkpt.get("lon"))
-        time_elem = trkpt.find("gpx:time", ns)
-        timestamp = time_elem.text if time_elem is not None else None
-        track_points.append(dict(lat=lat, lon=lon, timestamp=timestamp))
-    return track_points
+    return [
+        TrackPoint(
+            lat=float(trkpt.get("lat")),
+            lon=float(trkpt.get("lon")),
+            timestamp=trkpt.find("gpx:time", ns).text,
+        )
+        for trkpt in root.findall(".//gpx:trkpt", ns)
+    ]
 
 
-def parse_gpx_from_string(gpx_content: str) -> List[dict]:
-    """
-    Parses a GPX content from string and extracts coordinates with timestamps.
-    Returns list of track points.
-    """
+def parse_gpx_from_string(gpx_content: str) -> List[TrackPoint]:
+    """Parses a GPX string and extracts coordinates with timestamps. Returns list of track points."""
     root = ET.fromstring(gpx_content)
     return _parse_gpx_root(root)
 
@@ -57,62 +69,51 @@ def calculate_distances_from_start(track_points: List[dict]) -> np.array:
     distances = [0.0]
     prev = track_points[0]
     for curr in track_points[1:]:
-        distances.append(
-            distances[-1] + haversine_distance(prev["lat"], prev["lon"], curr["lat"], curr["lon"])
-        )
+        distances.append(distances[-1] + haversine_distance(prev.lat, prev.lon, curr.lat, curr.lon))
         prev = curr
     return np.array(distances)
 
 
 def calculate_times_from_start(track_points) -> np.array:
     """Calculates relative times in seconds from the start."""
-    start_time = parse_timestamp(track_points[0]["timestamp"])
-    return np.array([parse_timestamp(p["timestamp"]) - start_time for p in track_points])
+    start_time = parse_timestamp(track_points[0].timestamp)
+    return np.array([parse_timestamp(p.timestamp) - start_time for p in track_points])
 
 
 class GPXTrack:
-    """
-    A class to process GPX track data and convert between distances, times, and frame numbers.
-    """
+    """A class for calculations based on GPX track data."""
 
-    def __init__(self, track_points: List[dict] = None, gpx_content: str = None):
+    def __init__(self, gpx_data):
         """
-        Initialize with GPX data from various sources.
+        Initialize with either a list of TrackPoint or a GPX content string.
 
         Args:
-            track_points: Pre-parsed track points
-            gpx_content: GPX content as string
-            gpx_file_path: Path to GPX file
+            gpx_data: List[TrackPoint] or GPX content as string.
         """
-        # Load track points from provided source
-        if track_points is not None:
-            self.track_points = track_points
-        elif gpx_content is not None:
-            self.track_points = parse_gpx_from_string(gpx_content)
+        if isinstance(gpx_data, list):
+            self.track_points = gpx_data
+        elif isinstance(gpx_data, str):
+            self.track_points = parse_gpx_from_string(gpx_data)
         else:
-            raise ValueError("Must provide either track_points, gpx_content, or gpx_file_path")
+            raise ValueError("Argument must be a list of TrackPoint or a GPX content string.")
 
-        if not self.track_points:
-            raise ValueError("No track points found")
-
-        # Pre-calculate distances and times
         self.distances = calculate_distances_from_start(self.track_points)
         self.times = calculate_times_from_start(self.track_points)
 
     def distance_to_time(self, distance):
-        """Convert distance from start to time in seconds"""
+        """Converts distance from start to time in seconds"""
         return np.interp(distance, self.distances, self.times)
 
     def time_to_distance(self, time):
-        """Convert time in seconds to distance from start"""
+        """Converts time in seconds to distance from start"""
         return np.interp(time, self.times, self.distances)
 
     def distance_to_frame_number(self, distance, fps: float = 30.0):
-        """Convert distance from start to frame number"""
+        """Converts distance from start to frame number"""
         return time_to_frame_number(self.distance_to_time(distance), fps)
 
     def frame_number_to_distance(self, frame_number, fps: float = 30.0):
-        """Convert frame number to distance from start"""
+        """Converts frame number to distance from start"""
         return self.time_to_distance(frame_number_to_time(frame_number, fps))
 
 
@@ -140,7 +141,7 @@ if __name__ == "__main__":
     with open("activity_17792202410.gpx", "r", encoding="utf-8") as file:
         gpx_content = file.read()
 
-    track = GPXTrack(gpx_content=gpx_content)
+    track = GPXTrack(gpx_content)
 
     target_distances = np.array([x * 10 for x in range(100)])
 
