@@ -6,9 +6,15 @@ import dataclasses as dc
 
 import numpy as np
 
+EARTH_RADIUS = 6371000
+
 
 def haversine_distance(
-    lat1: float, lon1: float, lat2: float, lon2: float, sphere_radius: float = 6371000
+    lat1: float,
+    lon1: float,
+    lat2: float,
+    lon2: float,
+    sphere_radius: float = EARTH_RADIUS,
 ) -> float:
     """
     Calculate the great circle distance between two points on the Earth.
@@ -34,11 +40,26 @@ def haversine_distance(
     return c * sphere_radius
 
 
+def distance(
+    lat1: float,
+    lon1: float,
+    lat2: float,
+    lon2: float,
+    ele1: float = 0.0,
+    ele2: float = 0,
+    sphere_radius: float = EARTH_RADIUS,
+) -> float:
+    """Approximate distance between two close points on the Earth, considering elevation."""
+    horizontal_distance = haversine_distance(lat1, lon1, lat2, lon2, sphere_radius)
+    return math.sqrt(horizontal_distance**2 + (ele2 - ele1) ** 2)
+
+
 @dc.dataclass
 class TrackPoint:
     lat: float
     lon: float
     timestamp: str
+    elevation: float
 
 
 def _parse_gpx_root(root) -> List[dict]:
@@ -53,6 +74,7 @@ def _parse_gpx_root(root) -> List[dict]:
             lat=float(trkpt.get("lat")),
             lon=float(trkpt.get("lon")),
             timestamp=trkpt.find("gpx:time", ns).text,
+            elevation=float(trkpt.find("gpx:ele", ns).text),
         )
         for trkpt in root.findall(".//gpx:trkpt", ns)
     ]
@@ -69,7 +91,7 @@ def calculate_distances_from_start(track_points: List[dict]) -> np.array:
     distances = [0.0]
     prev = track_points[0]
     for curr in track_points[1:]:
-        distances.append(distances[-1] + haversine_distance(prev.lat, prev.lon, curr.lat, curr.lon))
+        distances.append(distances[-1] + distance(prev.lat, prev.lon, curr.lat, curr.lon))
         prev = curr
     return np.array(distances)
 
