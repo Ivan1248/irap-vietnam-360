@@ -5,6 +5,7 @@ from tqdm import tqdm
 import typing as T
 from pathlib import Path
 from functools import partial
+import warnings
 
 DEFAULT_FISHEYE_RADIUS_FACTOR = 0.94
 
@@ -94,7 +95,7 @@ def create_fisheye_to_perspective_map(
     fisheye_radius_factor=DEFAULT_FISHEYE_RADIUS_FACTOR,
 ):
     """
-    Creates mapping tables for remapping a fisheye image to a perspective projection with arbitrary camera orientation.
+    Creates mapping or remapping an equidi image to a perspective projection with arbitrary cammapping era orientation.
 
     Args:
         input_size (tuple): (width, height) of the input fisheye image.
@@ -120,55 +121,44 @@ def create_fisheye_to_perspective_map(
 
     if fisheye_center is None:
         fisheye_center = (input_width / 2, input_height / 2)
-    fisheye_cx, fisheye_cy = fisheye_center
 
-    # Fisheye parameters
+    # Fisheye projection parameters
+    fisheye_cx, fisheye_cy = fisheye_center
     fisheye_radius = min(fisheye_cx, fisheye_cy) * fisheye_radius_factor
 
     # Convert FOV to focal length equivalent for perspective projection
     focal_length_x = output_width / (2 * math.tan(math.radians(fov_h / 2)))
     focal_length_y = output_height / (2 * math.tan(math.radians(fov_v / 2)))
+    if not np.isclose(focal_length_x, focal_length_y, rtol=2.0 / min(output_size)):
+        warnings.warn("The output size does not match the aspect ratio of the FOV.")
 
-    # Perspective projection parameters
+    # Perspective projection center
     perspective_cx = output_width / 2
     perspective_cy = output_height / 2
 
-    # Combined rotation: R = Rz @ Rx @ Ry (yaw, then pitch, then roll)
-    R = get_rotation_matrix(*yaw_pitch, roll)
-
-    # Create meshgrid for output image coordinates
-    y, x = np.indices((output_height, output_width))  # shape (H, W)
+    # Output image coordinates normalized to [-1 .. 1]
+    y, x = np.indices((output_height, output_width), dtype=np.float32)
     x_norm = (x - perspective_cx) / focal_length_x
     y_norm = (y - perspective_cy) / focal_length_y
 
-    # Convert to 3D ray yaw_pitch (perspective projection)
-    ray_x = x_norm
-    ray_y = y_norm
-    ray_z = np.ones_like(ray_x)
+    # 3D unit vectors pitining at each pixel
+    rays = np.stack([x_norm, y_norm, np.ones_like(x_norm)], axis=-1)
+    rays /= np.linalg.norm(rays, axis=-1, keepdims=True)
 
-    # Normalize the ray
-    ray_length = np.sqrt(ray_x**2 + ray_y**2 + ray_z**2)
-    ray_x /= ray_length
-    ray_y /= ray_length
-    ray_z /= ray_length
+    # Rotate rays
+    R = get_rotation_matrix(*yaw_pitch, roll)
+    rays_rot = np.einsum("...j,ij->...i", rays, R)  # shape: (H, W, 3)
+    ray_x_rot, ray_y_rot, ray_z_rot = rays_rot[..., 0], rays_rot[..., 1], rays_rot[..., 2]
 
-    # Stack and rotate rays
-    rays = np.stack([ray_x, ray_y, ray_z], axis=-1)  # shape (H, W, 3)
-    rays_rot = np.einsum("...j,ij->...i", rays, R)  # shape (H, W, 3)
-    ray_x_rot, ray_y_rot, ray_z_rot = [rays_rot[..., i] for i in (0, 1, 2)]
-
-    # Calculate angle from optical axis (Z-axis)
-    theta = np.arccos(np.clip(ray_z_rot, -1, 1))
-
-    # For equidistant fisheye projection: r = f * theta
-    rho = fisheye_radius * theta / (np.pi / 2)
-
-    # Calculate azimuth angle
+    # Angle from optical axis (Z-axis)
+    theta = np.arccos(np.clip(ray_z_rot, -1, 1))  # shape: (H, W, 3)
+    # Azimuth
     phi = np.arctan2(ray_y_rot, ray_x_rot)
 
     # Convert to fisheye image coordinates
-    fisheye_x = fisheye_cx + rho * np.cos(phi)
-    fisheye_y = fisheye_cy + rho * np.sin(phi)
+    r = fisheye_radius / (np.pi / 2) * theta  # equidistant fisheye: proportional to the angle
+    fisheye_x = fisheye_cx + r * np.cos(phi)
+    fisheye_y = fisheye_cy + r * np.sin(phi)
 
     # Only map rays in front hemisphere and within input bounds
     valid = (theta > 0) & (theta < np.pi / 2)
@@ -176,8 +166,7 @@ def create_fisheye_to_perspective_map(
         (fisheye_x >= 0) & (fisheye_x < input_width) & (fisheye_y >= 0) & (fisheye_y < input_height)
     )
 
-    map_x = np.zeros((output_height, output_width), dtype=np.float32)
-    map_y = np.zeros_like(map_x)
+    map_x, map_y = [np.zeros((output_height, output_width), dtype=np.float32) for _ in range(2)]
     map_x[valid] = fisheye_x[valid].astype(np.float32)
     map_y[valid] = fisheye_y[valid].astype(np.float32)
 
@@ -283,15 +272,14 @@ def remap_frame(frame, map, out_size, interpolation=cv2.INTER_LINEAR, antialias=
     if antialias in ["auto", "gaussian"] and (
         out_size[0] < frame.shape[1] or out_size[1] < frame.shape[0]
     ):
-        # Use Gaussian blur with kernel size proportional to downsampling factor
+        import scipy.ndimage
+
         scale_x = frame.shape[1] / out_size[0]
         scale_y = frame.shape[0] / out_size[1]
-        ksize_x = max(1, int(2 * round(scale_x) + 1))
-        ksize_y = max(1, int(2 * round(scale_y) + 1))
-        # Ensure kernel size is odd and at least 3
-        ksize_x = ksize_x if ksize_x % 2 == 1 else ksize_x + 1
-        ksize_y = ksize_y if ksize_y % 2 == 1 else ksize_y + 1
-        smoothed_frame = cv2.GaussianBlur(frame, (ksize_x, ksize_y), 0)
+        sigma = (max(0.01, scale_x / 2.0), max(0.01, scale_y / 2.0))
+        smoothed_frame = scipy.ndimage.gaussian_filter(
+            frame, sigma=sigma + ((0,) if frame.ndim == 3 else ())
+        )
     elif isinstance(antialias, int) and (
         out_size[0] < frame.shape[1] or out_size[1] < frame.shape[0]
     ):
@@ -319,9 +307,7 @@ def remap_frame(frame, map, out_size, interpolation=cv2.INTER_LINEAR, antialias=
     )
 
 
-def iterate_video_frames(
-    cap, *, start_time=0, end_time=None, frames=None, pbar_f=partial(tqdm, desc="Processing frames")
-):
+def iterate_video_frames(cap, *, start_time=0, end_time=None, frames=None, pbar_f=None):
     """Generator that yields (frame_index, frame) from a cv2.VideoCapture object.
     Handles seeking, start/end time, and non-contiguous frame indices.
     Optionally wraps the frame index iterator with a progress bar or other factory.
@@ -331,7 +317,7 @@ def iterate_video_frames(
         cap (cv2.VideoCapture): OpenCV video capture object.
         start_time (float): Start time in seconds.
         end_time (float, optional): End time in seconds.
-        frames (list|slice|None): Specific frame indices or slice to process.
+        frames (list|slice|None): Frame indices or slice to yield from start time.
         pbar_f (callable): Progress bar factory or None.
 
     Yields:
@@ -341,11 +327,7 @@ def iterate_video_frames(
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     start_frame = int(start_time * fps)
     stop_frame = int(end_time * fps) if end_time is not None else total_frames
-    if stop_frame > total_frames:
-        stop_frame = total_frames
-
-    if start_frame >= stop_frame:
-        return
+    stop_frame = min(max(stop_frame, start_frame), total_frames)
 
     if frames is None:
         frames_iter = range(start_frame, stop_frame)
@@ -353,10 +335,9 @@ def iterate_video_frames(
         start, stop, step = frames.indices(stop_frame - start_frame)
         frames_iter = range(start + start_frame, stop + start_frame, step)
     else:
-        frames = sorted(frames)
+        frames_iter = sorted(frames)
         if frames[-1] >= stop_frame:
-            raise ValueError(f"Frame index {frames[-1]} exceeds final frame ({stop_frame-1}).")
-        frames_iter = frames
+            raise ValueError(f"Frame index {frames_iter[-1]} exceeds final frame ({stop_frame-1}).")
 
     if pbar_f is not None:
         frames_iter = pbar_f(frames_iter)
@@ -459,7 +440,9 @@ def convert_video(
     input_size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
     print(f"Input: {input_size[0]}x{input_size[1]}, {fps} FPS")
 
-    frame_iter = iterate_video_frames(cap, **frame_iter_args)
+    frame_iter = iterate_video_frames(
+        cap, **frame_iter_args, pbar_f=partial(tqdm, desc="Processing frames")
+    )
     convert_frame = frame_converter_f(input_size=input_size)
 
     out = None
@@ -502,7 +485,7 @@ if __name__ == "__main__":
             fov_h=127,  # GoPro Hero 4 medium: 127°
             fov_v=None,
             yaw_pitch=(0, 0),
-            roll=0.,
+            roll=0.0,
             output_size=(384, 288),
             fisheye_radius_factor=fisheye_radius_factor,
         ),
