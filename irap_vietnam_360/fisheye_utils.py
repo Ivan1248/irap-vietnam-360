@@ -1,4 +1,5 @@
 import cv2
+import av
 import numpy as np
 import math
 from tqdm import tqdm
@@ -6,6 +7,7 @@ import typing as T
 from pathlib import Path
 from functools import partial
 import warnings
+from scipy.spatial.transform import Rotation
 
 DEFAULT_FISHEYE_RADIUS_FACTOR = 0.94
 
@@ -29,8 +31,8 @@ def get_perspective_output_size(
         # Fisheye effective focal length in pixels (radius of fisheye circle)
         fisheye_radius = min(input_size[0] / 2, input_size[1] / 2) * fisheye_radius_factor
         # Perspective output size so that center scale matches fisheye center
-        output_width = 2 * fisheye_radius * math.tan(math.radians(fov[0] / 2))
-        output_height = 2 * fisheye_radius * math.tan(math.radians(fov[1] / 2))
+        output_width = 2 * fisheye_radius * fov[0] / 360
+        output_height = 2 * fisheye_radius * fov[1] / 360
         return int(round(output_width)), int(round(output_height))
     elif projection == "equirectangular":
         return input_size[1] * 2, input_size[1]  # Standard equirectangular aspect ratio
@@ -49,60 +51,37 @@ def get_fov_v(aspect_ratio, fov_h):
     return 2 * math.degrees(math.atan(math.tan(math.radians(fov_h / 2)) / aspect_ratio))
 
 
-def get_axial_rotation_matrix(axis, angle):
-    """Returns a rotation matrix for a given axis ('x', 'y', or 'z') and angle in degrees.
+def get_rotation_matrix(yaw: float, pitch: float, roll: float) -> np.ndarray:
+    """Returns a 3x3 rotation matrix for yaw (X), pitch (Y), and roll (Z) in degrees.
 
     Args:
-        axis (str): Axis of rotation ('x', 'y', or 'z').
-        angle (float): Angle in degrees.
+        yaw (float): Rotation around X axis in degrees.
+        pitch (float): Rotation around Y axis in degrees.
+        roll (float): Rotation around Z axis in degrees.
 
     Returns:
         np.ndarray: 3x3 rotation matrix.
     """
-    angle_rad = math.radians(angle)
-    c = math.cos(angle_rad)
-    s = math.sin(angle_rad)
-    if axis == "x":
-        return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
-    elif axis == "y":
-        return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
-    elif axis == "z":
-        return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
-    else:
-        raise ValueError("Axis must be one of 'x', 'y', or 'z'.")
-
-
-def get_rotation_matrix(yaw, pitch, roll):
-    """Returns a combined rotation matrix for yaw, pitch, and roll angles in degrees.
-    The order of rotations is yaw (Y), pitch (X), roll (Z).
-
-    Returns:
-        np.ndarray: 3x3 combined rotation matrix.
-    """
-    Rz = get_axial_rotation_matrix("z", roll)  # Roll around Z-axis
-    Rx = get_axial_rotation_matrix("x", pitch)  # Pitch around X-axis
-    Ry = get_axial_rotation_matrix("y", yaw)  # Yaw around Y-axis
-    return Rz @ Rx @ Ry  # Combined rotation matrix
+    # Use scipy's Rotation to construct the matrix. The order 'zyx' means:
+    # first rotate by yaw (X), then pitch (Y), then roll (Z)
+    return Rotation.from_euler("zyx", [yaw, pitch, roll], degrees=True).as_matrix()
 
 
 def create_fisheye_to_perspective_map(
     input_size,
     output_size=None,
     fov=(120.0, 120.0),
-    yaw_pitch=(0.0, 0.0),
-    roll=0.0,
+    yaw_pitch_roll=(0.0, 0.0, 0.0),
     fisheye_center=None,
     fisheye_radius_factor=DEFAULT_FISHEYE_RADIUS_FACTOR,
 ):
-    """
-    Creates mapping or remapping an equidi image to a perspective projection with arbitrary cammapping era orientation.
+    """Creates tables for remapping an equidistant fisheye image to a perspective projection with arbitrary camera orientation.
 
     Args:
         input_size (tuple): (width, height) of the input fisheye image.
         output_size (tuple, optional): (width, height) of the output perspective image. If None, it will be computed.
         fov (tuple): (horizontal_fov, vertical_fov) in degrees for the output perspective view.
-        yaw_pitch (tuple): (yaw, pitch) in degrees. Yaw: left/right, Pitch: up/down.
-        roll (float): Roll angle (twist) in degrees.
+        yaw_pitch_roll (tuple): (yaw, pitch, roll) in degrees.
         fisheye_center (tuple, optional): (x, y) coordinates of the fisheye circle center in the input image. If None, the image center is used.
         fisheye_radius_factor (float): Fraction of min(center_x, center_y) to use as the fisheye radius.
 
@@ -141,17 +120,17 @@ def create_fisheye_to_perspective_map(
     x_norm = (x - perspective_cx) / focal_length_x
     y_norm = (y - perspective_cy) / focal_length_y
 
-    # 3D unit vectors pitining at each pixel
+    # 3D unit vectors pointing at each pixel
     rays = np.stack([x_norm, y_norm, np.ones_like(x_norm)], axis=-1)
     rays /= np.linalg.norm(rays, axis=-1, keepdims=True)
 
     # Rotate rays
-    R = get_rotation_matrix(*yaw_pitch, roll)
+    R = get_rotation_matrix(*yaw_pitch_roll)
     rays_rot = np.einsum("...j,ij->...i", rays, R)  # shape: (H, W, 3)
     ray_x_rot, ray_y_rot, ray_z_rot = rays_rot[..., 0], rays_rot[..., 1], rays_rot[..., 2]
 
     # Angle from optical axis (Z-axis)
-    theta = np.arccos(np.clip(ray_z_rot, -1, 1))  # shape: (H, W, 3)
+    theta = np.arccos(np.clip(ray_z_rot, -1, 1))  # shape: (H, W)
     # Azimuth
     phi = np.arctan2(ray_y_rot, ray_x_rot)
 
@@ -161,7 +140,7 @@ def create_fisheye_to_perspective_map(
     fisheye_y = fisheye_cy + r * np.sin(phi)
 
     # Only map rays in front hemisphere and within input bounds
-    valid = (theta > 0) & (theta < np.pi / 2)
+    valid = (theta >= 0) & (theta < np.pi / 2)
     valid &= (
         (fisheye_x >= 0) & (fisheye_x < input_width) & (fisheye_y >= 0) & (fisheye_y < input_height)
     )
@@ -174,83 +153,109 @@ def create_fisheye_to_perspective_map(
 
 
 def create_dual_fisheye_to_equirectangular_map(
-    input_width,
-    input_height,
+    input_size=None,
+    output_size=None,
     output_aspect_ratio=2.0,
+    fov=(180.0, 180.0),
+    fisheye_center=None,
     fisheye_radius_factor=DEFAULT_FISHEYE_RADIUS_FACTOR,
     front_fisheye_position="left",
 ):
-    """Creates mapping tables for dual fisheye to equirectangular projection.
+    """Creates mapping tables for dual fisheye to equirectangular projection, with flexible parameters and NumPy vectorization.
 
     Args:
-        input_width (int): Input image width.
-        input_height (int): Input image height.
+        input_size (tuple): (width, height) of the input image (side-by-side fisheye).
+        output_size (tuple, optional): (width, height) of the output image. If None, computed from input_size and aspect ratio.
         output_aspect_ratio (float): Output aspect ratio (2.0 = standard equirectangular).
+        fov (tuple): (horizontal_fov, vertical_fov) in degrees for each fisheye (default: 180, 180).
+        fisheye_center (tuple, optional): (x, y) center of each fisheye (relative to each half). If None, uses center of each half.
         fisheye_radius_factor (float): Fisheye radius as fraction of available space.
         front_fisheye_position (str): 'right'/'left' for side_by_side, 'top'/'bottom' for top_bottom.
 
     Returns:
-        tuple: (map_x, map_y, output_size)
+        tuple: (map_x, map_y), output_size
             map_x (np.ndarray): X coordinates for remapping.
             map_y (np.ndarray): Y coordinates for remapping.
             output_size (tuple): (width, height) of the output image.
     """
-    # Auto-compute output dimensions
-    output_width = input_width
-    output_height = int(input_width / output_aspect_ratio)
+    if input_size is None:
+        raise ValueError("input_size must be provided as (width, height)")
+    input_width, input_height = input_size
     fisheye_width = input_width // 2
     fisheye_height = input_height
 
-    map_x = np.zeros((output_height, output_width), dtype=np.float32)
-    map_y = np.zeros((output_height, output_width), dtype=np.float32)
+    # Compute output size if not provided
+    if output_size is None:
+        output_width = input_width
+        output_height = int(output_width / output_aspect_ratio)
+        output_size = (output_width, output_height)
+    else:
+        output_width, output_height = output_size
 
     # Fisheye parameters
-    center_x = fisheye_width / 2
-    center_y = fisheye_height / 2
+    if fisheye_center is None:
+        center_x = fisheye_width / 2
+        center_y = fisheye_height / 2
+    else:
+        center_x, center_y = fisheye_center
     radius = min(center_x, center_y) * fisheye_radius_factor
 
-    for y in range(output_height):
-        for x in range(output_width):
-            # Convert to spherical coordinates
-            lon = (x / output_width) * 2 * math.pi - math.pi
-            lat = (y / output_height) * math.pi - math.pi / 2
+    fov_h, fov_v = fov
+    max_theta = np.radians(fov_h / 2)
 
-            # Convert to 3D coordinates
-            x3d = math.cos(lat) * math.cos(lon)
-            y3d = math.sin(lat)
-            z3d = math.cos(lat) * math.sin(lon)
+    # Vectorized grid of output pixel coordinates
+    y, x = np.indices((output_height, output_width), dtype=np.float32)
+    lon = (x / output_width) * 2 * np.pi - np.pi
+    lat = (y / output_height) * np.pi - np.pi / 2
 
-            # Determine which fisheye to use and calculate offset
-            use_front = z3d >= 0
+    # 3D coordinates on unit sphere
+    x3d = np.cos(lat) * np.cos(lon)
+    y3d = np.sin(lat)
+    z3d = np.cos(lat) * np.sin(lon)
 
-            if (use_front and front_fisheye_position == "right") or (
-                not use_front and front_fisheye_position == "left"
-            ):
-                offset_x, offset_y = fisheye_width, 0
-            else:
-                offset_x, offset_y = 0, 0
+    # Determine which fisheye to use (front or back)
+    use_front = z3d >= 0
+    if front_fisheye_position == "right":
+        front_offset_x = fisheye_width
+        back_offset_x = 0
+    else:
+        front_offset_x = 0
+        back_offset_x = fisheye_width
+    offset_x = np.where(use_front, front_offset_x, back_offset_x)
+    offset_y = 0
 
-            # Flip coordinates for back camera
-            if not use_front:
-                x3d = -x3d
-                z3d = -z3d
+    # Flip coordinates for back camera
+    x3d_back = np.where(use_front, x3d, -x3d)
+    y3d_back = y3d
+    z3d_back = np.where(use_front, z3d, -z3d)
 
-            # Project to fisheye
-            r3d = math.sqrt(x3d * x3d + y3d * y3d)
-            if r3d > 0 and abs(z3d) > 1e-6:
-                theta = math.atan2(r3d, abs(z3d))
-                rho = radius * theta / (math.pi / 2)
+    r3d = np.sqrt(x3d_back**2 + y3d_back**2)
+    theta = np.arctan2(r3d, np.abs(z3d_back))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        rho = radius * theta / max_theta
+        fisheye_x = center_x + np.where(r3d > 1e-8, rho * (x3d_back / r3d), 0)
+        fisheye_y = center_y + np.where(r3d > 1e-8, rho * (y3d_back / r3d), 0)
+        fisheye_x = np.where(r3d <= 1e-8, center_x, fisheye_x)
+        fisheye_y = np.where(r3d <= 1e-8, center_y, fisheye_y)
 
-                fisheye_x = center_x + rho * (x3d / r3d)
-                fisheye_y = center_y + rho * (y3d / r3d)
-                final_x = fisheye_x + offset_x
-                final_y = fisheye_y + offset_y
+    final_x = fisheye_x + offset_x
+    final_y = fisheye_y + offset_y
 
-                if 0 <= final_x < input_width and 0 <= final_y < input_height:
-                    map_x[y, x] = final_x
-                    map_y[y, x] = final_y
+    # Mask for valid coordinates
+    valid = (
+        (np.abs(z3d_back) > 1e-6)
+        & (final_x >= 0)
+        & (final_x < input_width)
+        & (final_y >= 0)
+        & (final_y < input_height)
+    )
 
-    return map_x, map_y, (output_width, output_height)
+    map_x = np.zeros((output_height, output_width), dtype=np.float32)
+    map_y = np.zeros((output_height, output_width), dtype=np.float32)
+    map_x[valid] = final_x[valid].astype(np.float32)
+    map_y[valid] = final_y[valid].astype(np.float32)
+
+    return (map_x, map_y), output_size
 
 
 def remap_frame(frame, map, out_size, interpolation=cv2.INTER_LINEAR, antialias="auto"):
@@ -307,51 +312,156 @@ def remap_frame(frame, map, out_size, interpolation=cv2.INTER_LINEAR, antialias=
     )
 
 
-def iterate_video_frames(cap, *, start_time=0, end_time=None, frames=None, pbar_f=None):
-    """Generator that yields (frame_index, frame) from a cv2.VideoCapture object.
-    Handles seeking, start/end time, and non-contiguous frame indices.
-    Optionally wraps the frame index iterator with a progress bar or other factory.
-    Supports frames as None, list/array, or a slice object.
-
-    Args:
-        cap (cv2.VideoCapture): OpenCV video capture object.
-        start_time (float): Start time in seconds.
-        end_time (float, optional): End time in seconds.
-        frames (list|slice|None): Frame indices or slice to yield from start time.
-        pbar_f (callable): Progress bar factory or None.
-
-    Yields:
-        tuple: (frame_index (int), frame (np.ndarray))
-    """
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+def get_frame_indices(start_time, end_time, frames, fps, total_frames):
     start_frame = int(start_time * fps)
     stop_frame = int(end_time * fps) if end_time is not None else total_frames
     stop_frame = min(max(stop_frame, start_frame), total_frames)
 
     if frames is None:
-        frames_iter = range(start_frame, stop_frame)
+        frame_indices = range(start_frame, stop_frame)
     elif isinstance(frames, slice):
-        start, stop, step = frames.indices(stop_frame - start_frame)
-        frames_iter = range(start + start_frame, stop + start_frame, step)
+        s, e, st = frames.indices(stop_frame - start_frame)
+        frame_indices = range(s + start_frame, e + start_frame, st)
     else:
-        frames_iter = sorted(frames)
-        if frames[-1] >= stop_frame:
-            raise ValueError(f"Frame index {frames_iter[-1]} exceeds final frame ({stop_frame-1}).")
+        frame_indices = frames + start_frame
+        if frame_indices[-1] >= stop_frame:
+            raise ValueError(
+                f"Frame index {frame_indices[-1]} exceeds final frame ({stop_frame-1})."
+            )
+    return frame_indices
 
-    if pbar_f is not None:
-        frames_iter = pbar_f(frames_iter)
 
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-    prev_frame_index = start_frame - 1
-    for frame_index in frames_iter:
-        if frame_index != prev_frame_index + 1:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-        prev_frame_index = frame_index
-        ret, frame = cap.read()
+class VideoReader:
+    """Abstract base class for video readers."""
+
+    def get_frame(self, frame_index: int) -> np.ndarray:
+        """Get a frame by index."""
+        raise NotImplementedError()
+
+    def close(self):
+        """Close the video reader and release resources."""
+        raise NotImplementedError()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+
+class PyAVVideoReader(VideoReader):
+    def __init__(
+        self,
+        container: av.container.input.InputContainer,
+        stream_index: int = 1,
+    ):
+        self.container = container
+        video_streams = [s for s in container.streams if s.type == "video"]
+        self.stream = video_streams[stream_index]
+
+        self.fps = float(self.stream.average_rate)
+        self.num_frames = self.stream.frames
+        self.frame_size = (self.stream.width, self.stream.height)
+
+        self.decoder_index = -1
+        self.keyframe_index = 0
+        self.keyframe_interval = 1
+        self.frame_iter = None
+
+    def _seek(self, frame_index: int):
+        timestamp = int(frame_index / self.fps / self.stream.time_base)
+        self.container.seek(timestamp, any_frame=False, backward=True, stream=self.stream)
+        self.frame_iter = self.container.decode(self.stream)
+
+    def get_frame(self, frame_index):
+        if (
+            self.frame_iter is None
+            or frame_index > self.keyframe_index + self.keyframe_interval
+            or frame_index < self.decoder_index
+        ):
+            self._seek(frame_index)
+            self.decoder_index = -1
+
+        while self.decoder_index < frame_index:
+            frame = next(self.frame_iter)
+            self.decoder_index = int(frame.pts * self.stream.time_base * self.fps)
+            if frame.key_frame:
+                self.keyframe_interval = max(
+                    self.keyframe_interval, self.decoder_index - self.keyframe_index + 1
+                )
+                self.keyframe_index = self.decoder_index
+        self.keyframe_interval = max(
+            self.keyframe_interval, self.decoder_index - self.keyframe_index + 1
+        )
+
+        assert self.decoder_index == frame_index
+        return frame.to_ndarray(format="bgr24")
+
+    def close(self):
+        self.container.close()
+
+
+class OpenCVVideoReader(VideoReader):
+    def __init__(self, cap: cv2.VideoCapture):
+        self.cap = cap
+        self.fps = int(cap.get(cv2.CAP_PROP_FPS))
+        self.num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.frame_size = (
+            int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+            int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+        )
+
+        self.prev_frame_index = None
+
+    def get_frame(self, frame_index: int) -> np.ndarray:
+        if self.prev_frame_index is None or frame_index - 1 != self.prev_frame_index:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        self.prev_frame_index = frame_index
+        ret, frame = self.cap.read()
         if not ret:
-            break
-        yield frame_index, frame
+            raise ValueError(f"Failed to read frame {frame_index}.")
+        return frame
+
+    def close(self) -> None:
+        self.cap.release()
+
+
+def iterate_video_frames(
+    video_reader: VideoReader,
+    start_time: int = 0.0,
+    end_time: int | None = None,
+    frames: list[int] | slice | None = None,
+    pbar_f: T.Callable | None = None,
+) -> T.Generator[tuple[int, np.ndarray], None, None]:
+    """Generator that yields (frame_index, frame) from a PyAV container object (or similar),
+    supporting flexible frame selection, stream selection, and progress reporting.
+
+    Args:
+        video_reader (VideoReader): Video reader object that implements the get_frame method.
+        start_time (float, optional): Start time in seconds from which to begin yielding frames.
+            Defaults to 0.
+        end_time (float, optional): End time in seconds at which to stop yielding frames. If None,
+            continues to the end of the video. Defaults to None.
+        frames (list[int] | slice | None, optional): Frame indices or slice to yield from start
+            time. If None, yields all frames between start_time and end_time.
+        pbar_f (callable, optional): Factory function (e.g., tqdm) to wrap the frame index iterator
+            for progress reporting. If None, no progress bar is used.
+
+    Yields:
+        tuple: (frame_index (int), frame (np.ndarray))
+            frame_index: Index of the frame in the video (starting from 0).
+            frame: Frame as a NumPy ndarray in BGR24 format.
+
+    Raises:
+        ValueError: If no video streams are found in the container, or if requested frame indices are out of bounds.
+    """
+    frame_indices = get_frame_indices(
+        start_time, end_time, frames, video_reader.fps, video_reader.num_frames
+    )
+    if pbar_f is not None:
+        frame_indices = pbar_f(frame_indices)
+    for i in frame_indices:
+        yield i, video_reader.get_frame(i)
 
 
 def get_fisheye_to_perspective_converter(
@@ -359,14 +469,14 @@ def get_fisheye_to_perspective_converter(
     *,
     fov_h=120.0,
     fov_v=None,
-    yaw_pitch=(0.0, 0.0),
-    roll=0.0,
+    yaw_pitch_roll=(0.0, 0.0, 0.0),
     output_size=None,
     output_aspect_ratio=None,
     fisheye_radius_factor=DEFAULT_FISHEYE_RADIUS_FACTOR,
     mode="perspective",
 ):
-    """Returns a frame converter function for Insta360 fisheye video to perspective or equirectangular.
+    """Returns a frame converter function from equidistant fisheye to perspective or equirectangular
+    projectio.
 
     Args:
         input_size (tuple): (width, height) of the input image.
@@ -401,8 +511,7 @@ def get_fisheye_to_perspective_converter(
         map, output_size = create_fisheye_to_perspective_map(
             output_size=output_size,
             fov=(fov_h, fov_v),
-            yaw_pitch=yaw_pitch,
-            roll=roll,
+            yaw_pitch_roll=yaw_pitch_roll,
             **map_kwargs,
         )
         print(f"Fisheye to perspective: {output_size[0]}x{output_size[1]}, FOV: {fov_h}°x{fov_v}°")
@@ -417,59 +526,51 @@ def convert_video(
     output_path: str,
     frame_converter_f: T.Callable = get_fisheye_to_perspective_converter,
     frame_iter_args: dict = dict(start_time=0, end_time=None, frames=None),
-    video_writer_args: dict = None,
+    stream_index: int = 0,
+    video_writer_f=partial(cv2.VideoWriter, fourcc=cv2.VideoWriter_fourcc(*"mp4v")),
+    use_opencv_reader: bool = False,
 ):
-    """Converts a video using a frame converter function and save the result.
+    """
+    Converts a video using a frame converter function and saves the result.
 
     Args:
         input_path (str): Path to input video file.
         output_path (str): Path to output video file.
         frame_converter_f (Callable): Function that returns a frame converter (should accept input_size as kwarg).
-        frame_iter_args (dict): Arguments for iterate_video_frames.
-        video_writer_args (dict, optional): Optional dict for cv2.VideoWriter (e.g., fourcc, fps, frameSize).
-
-    Returns:
-        None
+        frame_iter_args (dict): Arguments for frame iteration (start_time, end_time, frames).
+        stream_index (int): Index of the video stream to use for PyAV (default: 0).
+        video_writer_f (Callable): Function to create a cv2.VideoWriter instance (default: mp4v codec).
+        use_opencv_reader (bool): If True, use OpenCV for video reading; if False, use PyAV.
     """
-    cap = cv2.VideoCapture(input_path)
-    if not cap.isOpened():
-        raise IOError(f"Cannot open video file: {input_path}")
-
-    # Get video properties
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
-    input_size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
-    print(f"Input: {input_size[0]}x{input_size[1]}, {fps} FPS")
-
-    frame_iter = iterate_video_frames(
-        cap, **frame_iter_args, pbar_f=partial(tqdm, desc="Processing frames")
-    )
-    convert_frame = frame_converter_f(input_size=input_size)
-
-    out = None
-    out_frame_size = None
-    for frame_index, frame in frame_iter:
-        out_frame = convert_frame(frame)
-        if out is None:
-            out_frame_size = (out_frame.shape[1], out_frame.shape[0])
-            writer_args = dict(
-                fourcc=cv2.VideoWriter_fourcc(*"mp4v"),
-                fps=fps,
-                frameSize=out_frame_size,
-            )
-            if video_writer_args:
-                writer_args.update(video_writer_args)
-            out = cv2.VideoWriter(output_path, **writer_args)
-            print(f"Output: {out_frame_size[0]}x{out_frame_size[1]}, {fps} FPS")
-        out.write(out_frame)
-        # png_path = (Path(output_path).with_suffix("")) / f"{frame_index:07d}.png"
-        # png_path.parent.mkdir(parents=True, exist_ok=True)
-        # cv2.imwrite(str(png_path), out_frame)
-    cap.release()
-    if out is not None:
-        out.release()
-        print(f"Conversion complete: {output_path}")
+    if use_opencv_reader:
+        if stream_index != 0:
+            raise ValueError("OpenCV reader does not support stream_index, use PyAV instead.")
+        reader = OpenCVVideoReader(cv2.VideoCapture(input_path))
     else:
-        print("No frames were written.")
+        reader = PyAVVideoReader(av.open(input_path), stream_index)
+    with reader:
+        input_size = reader.frame_size
+        print(f"Input: {input_size[0]}x{input_size[1]}, {reader.fps} FPS, stream {stream_index}")
+        convert_frame = frame_converter_f(input_size=input_size)
+        frame_iter = iterate_video_frames(
+            reader,
+            **frame_iter_args,
+            pbar_f=partial(tqdm, desc="Processing frames"),
+        )
+        writer = None
+        for frame_index, frame in frame_iter:
+            out_frame = convert_frame(frame)
+
+            if writer is None:
+                out_frame_size = (out_frame.shape[1], out_frame.shape[0])
+                writer = video_writer_f(output_path, fps=reader.fps, frameSize=out_frame_size)
+                print(f"Output: {out_frame_size[0]}x{out_frame_size[1]}, {reader.fps} FPS")
+
+            writer.write(out_frame)
+
+        if writer is not None:
+            writer.release()
+            print(f"Conversion complete: {output_path}")
 
 
 # Example usage
@@ -489,7 +590,8 @@ if __name__ == "__main__":
             output_size=(384, 288),
             fisheye_radius_factor=fisheye_radius_factor,
         ),
-        frame_iter_args=dict(start_time=80, end_time=150),
+        use_opencv_reader=True,
+        frame_iter_args=dict(start_time=0, end_time=None, frames=list(range(0, 1000, 1))),
     )
 
     # Single fisheye to perspective with custom aspect ratio and FOV
