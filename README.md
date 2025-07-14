@@ -52,7 +52,8 @@ Each output subfolder matches the input and contains PNG images named by their f
 ## To do
 
 - The synchronization between video duration and GPS track duration is currently handled by a simple rescaling hack. This should be improved for better alignment.
+- The camera usually does not point exactly in the movement direction and sometimes points backwards. Add recognition of the road direction or the movement direction (including whether the camera points backward) or use gyroscope measurements?
+  - The synchronization of frame orientations with frames might not be perfect (there is a few more orientations than frames).
+  - Subtraction of estimated orientations does not work correctly.
 - Check anti-aliasing and interpolation.
 - Check the perspective conversion code.
-- The camera usually does not point exactly in the movement direction and sometimes points backwards. The center of the field of view can only be changed by manually setting the pitch, yaw and roll angles. Add recognition of the road direction or the movement direction (including whether the camera points backward)?
-- Do something about head movement (helmet mounted cameras)?
