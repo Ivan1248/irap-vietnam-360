@@ -40,6 +40,11 @@ def extract_frames_by_distance(
 
     for input_seq_dir in filter(lambda d: d.is_dir(), root_dir.iterdir()):
         video_files = list(input_seq_dir.glob(f"*{video_ext}"))
+        if len(video_files) != 1:
+            warnings.warn(
+                f"The directory {input_seq_dir} contains {len(video_files)} {video_ext} video files, but 1 is expected. Skipping."
+            )
+            continue
         gpx_files = list(input_seq_dir.glob(f"*{gpx_ext}"))
         video_path, gpx_path = video_files[0], gpx_files[0]
 
@@ -91,13 +96,11 @@ def extract_frames_by_distance(
             pbar_f=partial(tqdm, desc=f"Processing {input_seq_dir.name}"),
         ):
             if stabilize:
-                # Convert to rotation matrices
-                orientation_rot = R.from_euler("zyx", orientations[frame_idx], degrees=True)
+                orientation_rot = R.from_euler("zyx", orientations[frame_idx][::-1], degrees=True)
                 yaw_pitch_roll_rot = R.from_euler("zyx", yaw_pitch_roll, degrees=True)
                 combined_rot = yaw_pitch_roll_rot * orientation_rot.inv()
                 frame_converter = get_frame_converter(combined_rot.as_euler("zyx", degrees=True))
             out_frame = frame_converter(frame)
-            # draw orientation text on frame
             if stabilize:
                 orientation_text = f"Yaw: {orientations[frame_idx][0]:.2f}, Pitch: {orientations[frame_idx][1]:.2f}, Roll: {orientations[frame_idx][2]:.2f}"
                 cv2.putText(
@@ -106,7 +109,7 @@ def extract_frames_by_distance(
                     (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.5,
-                    (255, 255, 255),
+                    (0, 255, 0),
                     1,
                 )
             cv2.imwrite(out_seq_dir / f"{frame_idx:07d}.png", out_frame)
