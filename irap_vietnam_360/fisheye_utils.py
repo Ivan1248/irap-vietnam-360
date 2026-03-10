@@ -4,12 +4,34 @@ import numpy as np
 import math
 from tqdm import tqdm
 import typing as T
-from pathlib import Path
 from functools import partial
 import warnings
 from scipy.spatial.transform import Rotation
 
 DEFAULT_FISHEYE_RADIUS_FACTOR = 0.94
+
+
+
+def get_fisheye_to_perspective_converter(
+    input_size: tuple,
+    fov: tuple,
+    fisheye_radius_factor: float,
+    output_size: tuple = None,
+    antialias: str = "none",
+):
+    (map_x, map_y), computed_output_size = create_fisheye_to_perspective_map(
+        input_size=input_size,
+        output_size=output_size,
+        fov=fov,
+        fisheye_radius_factor=fisheye_radius_factor,
+    )
+
+    return partial(
+        remap_frame,
+        map=(map_x, map_y),
+        out_size=computed_output_size if output_size is None else output_size,
+        antialias=antialias,
+    )
 
 
 def get_aspect_ratio_from_fov(
@@ -52,18 +74,23 @@ def get_fov_v(aspect_ratio, fov_h):
 
 
 def get_rotation_matrix(yaw: float, pitch: float, roll: float) -> np.ndarray:
-    """Returns a 3x3 rotation matrix for yaw (X), pitch (Y), and roll (Z) in degrees.
+    """Returns a 3x3 rotation matrix for yaw (Z), pitch (Y), and roll (X) in degrees.
+
+    ROS REP-103 compliant rotation conventions:
+    - Body frame: x forward, y left, z up (right-handed)
+    - Fixed axis rotations: roll about X, pitch about Y, yaw about Z
+    - Angles provided in degrees in the order [yaw, pitch, roll]
+    - Uses scipy's `Rotation.from_euler("zyx", [yaw, pitch, roll], degrees=True)`
+    - Yaw increases counter-clockwise when viewed from above (positive Z)
 
     Args:
-        yaw (float): Rotation around X axis in degrees.
-        pitch (float): Rotation around Y axis in degrees.
-        roll (float): Rotation around Z axis in degrees.
+        yaw (float): Rotation around Z axis in degrees (counter-clockwise positive).
+        pitch (float): Rotation around Y axis in degrees (nose up positive).
+        roll (float): Rotation around X axis in degrees (right wing down positive).
 
     Returns:
         np.ndarray: 3x3 rotation matrix.
     """
-    # Use scipy's Rotation to construct the matrix. The order 'zyx' means:
-    # first rotate by yaw (X), then pitch (Y), then roll (Z)
     return Rotation.from_euler("zyx", [yaw, pitch, roll], degrees=True).as_matrix()
 
 
@@ -323,7 +350,7 @@ def get_frame_indices(start_time, end_time, frames, fps, total_frames):
         s, e, st = frames.indices(stop_frame - start_frame)
         frame_indices = range(s + start_frame, e + start_frame, st)
     else:
-        frame_indices = frames + start_frame
+        frame_indices = np.asarray(frames) + start_frame
         if frame_indices[-1] >= stop_frame:
             raise ValueError(
                 f"Frame index {frame_indices[-1]} exceeds final frame ({stop_frame-1})."
@@ -476,14 +503,13 @@ def get_fisheye_to_perspective_converter(
     mode="perspective",
 ):
     """Returns a frame converter function from equidistant fisheye to perspective or equirectangular
-    projectio.
+    projection.
 
     Args:
         input_size (tuple): (width, height) of the input image.
         fov_h (float): Horizontal field of view in degrees (perspective mode).
         fov_v (float, optional): Vertical field of view in degrees (perspective mode).
-        yaw_pitch (tuple): (yaw, pitch) in degrees.
-        roll (float): Roll angle (twist) in degrees.
+        yaw_pitch_roll (tuple): (yaw, pitch, roll) in degrees, using yaw(Z), pitch(Y), roll(X).
         output_size (tuple, optional): (width, height) of the output image.
         output_aspect_ratio (float, optional): Output aspect ratio.
         fisheye_radius_factor (float): Fisheye radius factor.
@@ -585,8 +611,7 @@ if __name__ == "__main__":
             get_fisheye_to_perspective_converter,
             fov_h=127,  # GoPro Hero 4 medium: 127°
             fov_v=None,
-            yaw_pitch=(0, 0),
-            roll=0.0,
+            yaw_pitch_roll=(0.0, 0.0, 0.0),
             output_size=(384, 288),
             fisheye_radius_factor=fisheye_radius_factor,
         ),
@@ -614,3 +639,28 @@ if __name__ == "__main__":
         "output/20231223_unit1_58_59_836/LRV_20241219_105926_01_145_equirectangular.mp4",
         frame_converter_f=partial(get_fisheye_to_perspective_converter, mode="equirectangular"),
     )
+
+
+def undistort_fisheye(image: np.ndarray, camera_matrix: np.ndarray, distortion_coeffs: np.ndarray) -> np.ndarray:
+    """
+    Undistort a fisheye image using camera calibration parameters
+    
+    Args:
+        image: Input fisheye image (BGR format)
+        camera_matrix: 3x3 camera intrinsic matrix
+        distortion_coeffs: Fisheye distortion coefficients (4-element array)
+        
+    Returns:
+        Undistorted image
+    """
+    height, width = image.shape[:2]
+    
+    # Create undistortion maps
+    map_x, map_y = cv2.fisheye.initUndistortRectifyMap(
+        camera_matrix, distortion_coeffs, np.eye(3), camera_matrix, (width, height), cv2.CV_32FC1
+    )
+    
+    # Apply undistortion
+    undistorted = cv2.remap(image, map_x, map_y, cv2.INTER_LINEAR)
+    
+    return undistorted

@@ -7,7 +7,8 @@ import warnings
 from tqdm import tqdm
 import av
 
-from .gpx_utils import GPXTrack
+import gps_utils
+from .gps_utils import GPXTrackOld
 from .fisheye_utils import (
     get_fisheye_to_perspective_converter,
     iterate_video_frames,
@@ -27,6 +28,7 @@ def extract_frames_by_distance(
     output_size: tuple = (384, 256),
     fisheye_radius_factor: float = 0.94,
     yaw_pitch_roll: tuple = (0.0, 0.0, 0.0),
+    imu_to_cam_ypr_deg: tuple = (0.0, 0.0, 0.0),
     stabilize: bool = False,
 ):
     """
@@ -37,6 +39,7 @@ def extract_frames_by_distance(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     yaw_pitch_roll = np.array(yaw_pitch_roll, dtype=np.float32)
+    imu_to_cam_ypr_deg = np.array(imu_to_cam_ypr_deg, dtype=np.float32)
 
     for input_seq_dir in filter(lambda d: d.is_dir(), root_dir.iterdir()):
         video_files = list(input_seq_dir.glob(f"*{video_ext}"))
@@ -55,7 +58,12 @@ def extract_frames_by_distance(
         reader = PyAVVideoReader(av.open(video_path), 0)
 
         if stabilize:
-            orientations = estimate_orientations(video_path, False).yaw_pitch_roll
+            # Estimate orientations; for 'basic', map IMU to camera frame during integration.
+            orientations = estimate_orientations(
+                video_path,
+                method="basic",
+                imu_to_cam_ypr_deg=tuple(float(x) for x in imu_to_cam_ypr_deg),
+            ).yaw_pitch_roll
             if len(orientations) != reader.num_frames:
                 message = f"The number of estimated orientations ({len(orientations)}) does not match the number of frames ({reader.num_frames})."
                 if len(orientations) > reader.num_frames:
@@ -64,7 +72,7 @@ def extract_frames_by_distance(
                     raise ValueError(message)
 
         with open(gpx_path, "r", encoding="utf-8") as f:
-            track = GPXTrack(f.read())
+            track = GPXTrackOld(f.read())
 
         print(
             f"Warning: GPS path duration: {track.times[-1]}, video duration: {reader.num_frames / reader.fps}. Rescaling GPS path duration."
@@ -72,9 +80,16 @@ def extract_frames_by_distance(
         # Hack to make the video and path duration match, TODO
         track.times = track.times * (reader.num_frames / reader.fps / track.times[-1])
 
+        def time_to_frame_number(time, fps: float) -> int:
+            return np.array(time * fps + 0.5, dtype=int)
+
+        def distance_to_frame_number(track, distance, fps: float = 30.0):
+            """Converts distance from start to frame number"""
+            return time_to_frame_number(gps_utils.distance_to_time(track, distance), fps)
+
         frame_indices = np.unique(
-            track.distance_to_frame_number(
-                np.arange(0, track.distances[-1], dist_step), fps=reader.fps
+            distance_to_frame_number(
+                track, np.arange(0, track.distances[-1], dist_step), fps=reader.fps
             )
         )
 
@@ -90,19 +105,32 @@ def extract_frames_by_distance(
         frame_converter = get_frame_converter(yaw_pitch_roll)
         out_seq_dir = output_dir / input_seq_dir.name
         out_seq_dir.mkdir(parents=True, exist_ok=True)
+        # ROS REP-103: fixed axis rotations (roll about X, pitch about Y, yaw about Z)
+        R_imu_to_cam = R.from_euler("zyx", imu_to_cam_ypr_deg, degrees=True)
+
         for frame_idx, frame in iterate_video_frames(
             reader,
             frames=frame_indices,
             pbar_f=partial(tqdm, desc=f"Processing {input_seq_dir.name}"),
         ):
             if stabilize:
-                orientation_rot = R.from_euler("zyx", orientations[frame_idx][::-1], degrees=True)
+                # ROS REP-103: Convert body/IMU orientation to camera frame using fixed calibration
+                # Body frame orientation from stabilization (yaw, pitch, roll about Z, Y, X)
+                orientation_rot = R.from_euler("zyx", orientations[frame_idx], degrees=True)
+                # Transform from body frame to camera frame
+                orientation_rot_cam = R_imu_to_cam * orientation_rot
+                # Apply user-specified camera rotation (yaw, pitch, roll about Z, Y, X)
                 yaw_pitch_roll_rot = R.from_euler("zyx", yaw_pitch_roll, degrees=True)
-                combined_rot = yaw_pitch_roll_rot * orientation_rot.inv()
+                # Final rotation: user rotation composed with inverse of estimated orientation
+                combined_rot = yaw_pitch_roll_rot * orientation_rot_cam.inv()
                 frame_converter = get_frame_converter(combined_rot.as_euler("zyx", degrees=True))
             out_frame = frame_converter(frame)
             if stabilize:
-                orientation_text = f"Yaw: {orientations[frame_idx][0]:.2f}, Pitch: {orientations[frame_idx][1]:.2f}, Roll: {orientations[frame_idx][2]:.2f}"
+                # Display camera-frame angles for interpretability.
+                ypr_cam = orientation_rot_cam.as_euler("zyx", degrees=True)
+                orientation_text = (
+                    f"Yaw: {ypr_cam[0]:.2f}, Pitch: {ypr_cam[1]:.2f}, Roll: {ypr_cam[2]:.2f}"
+                )
                 cv2.putText(
                     out_frame,
                     orientation_text,
@@ -159,6 +187,24 @@ if __name__ == "__main__":
         "--roll", type=float, default=0.0, help="Optical axis rotation angle (degrees)."
     )
     parser.add_argument(
+        "--imu_to_cam_yaw",
+        type=float,
+        default=0.0,
+        help="Fixed yaw (Z) from IMU/body frame to camera optical frame, degrees.",
+    )
+    parser.add_argument(
+        "--imu_to_cam_pitch",
+        type=float,
+        default=0.0,
+        help="Fixed pitch (Y) from IMU/body frame to camera optical frame, degrees.",
+    )
+    parser.add_argument(
+        "--imu_to_cam_roll",
+        type=float,
+        default=0.0,
+        help="Fixed roll (X) from IMU/body frame to camera optical frame, degrees.",
+    )
+    parser.add_argument(
         "--stabilize",
         action="store_true",
         help="Apply stabilization to the fisheye frames based on motion sensor data.",
@@ -173,5 +219,10 @@ if __name__ == "__main__":
         output_size=(args.output_width, args.output_height),
         fisheye_radius_factor=args.fisheye_radius_factor,
         yaw_pitch_roll=(args.yaw, args.pitch, args.roll),
+        imu_to_cam_ypr_deg=(
+            args.imu_to_cam_yaw,
+            args.imu_to_cam_pitch,
+            args.imu_to_cam_roll,
+        ),
         stabilize=args.stabilize,
     )
