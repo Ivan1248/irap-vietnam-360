@@ -3,7 +3,56 @@ from typing import List
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from .data import GPSTrack, TrackPoint
+import dataclasses as dc
+import numpy as np
+
+
+# Data structures
+
+
+@dc.dataclass
+class TrackPoint:
+    lat: float
+    lon: float
+    time: str
+    altitude: float
+
+
+@dc.dataclass
+class GPSTrack:
+    time: np.ndarray
+    lat: np.ndarray
+    lon: np.ndarray
+    altitude: np.ndarray
+    speed: np.ndarray | None = None
+    track: np.ndarray | None = None
+
+    def from_track_points(track_points: List[TrackPoint]) -> "GPSTrack":
+        return GPSTrack(
+            time=np.array([p.time for p in track_points]),
+            lat=np.array([p.lat for p in track_points]),
+            lon=np.array([p.lon for p in track_points]),
+            altitude=np.array([p.altitude for p in track_points]),
+        )
+
+    def with_zero_start_time(self) -> "GPSTrack":
+        return GPSTrack(
+            time=self.time - self.time[0],
+            lat=self.lat,
+            lon=self.lon,
+            altitude=self.altitude,
+        )
+
+    def __getitem__(self, index: int) -> TrackPoint:
+        return TrackPoint(
+            lat=self.lat[index],
+            lon=self.lon[index],
+            time=self.time[index],
+            altitude=self.altitude[index],
+        )
+
+    def __len__(self) -> int:
+        return len(self.time)
 
 
 # Parsing

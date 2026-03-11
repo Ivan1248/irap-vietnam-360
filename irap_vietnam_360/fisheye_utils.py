@@ -11,7 +11,6 @@ from scipy.spatial.transform import Rotation
 DEFAULT_FISHEYE_RADIUS_FACTOR = 0.94
 
 
-
 def get_fisheye_to_perspective_converter(
     input_size: tuple,
     fov: tuple,
@@ -34,9 +33,7 @@ def get_fisheye_to_perspective_converter(
     )
 
 
-def get_aspect_ratio_from_fov(
-    fov, projection: T.Literal["perspective", "equirectangular"] = "perspective"
-):
+def get_aspect_ratio_from_fov(fov, projection: T.Literal["perspective", "equirectangular"] = "perspective"):
     if projection == "perspective":
         return math.tan(math.radians(fov[0] / 2)) / math.tan(math.radians(fov[1] / 2))
     elif projection == "equirectangular":
@@ -168,9 +165,7 @@ def create_fisheye_to_perspective_map(
 
     # Only map rays in front hemisphere and within input bounds
     valid = (theta >= 0) & (theta < np.pi / 2)
-    valid &= (
-        (fisheye_x >= 0) & (fisheye_x < input_width) & (fisheye_y >= 0) & (fisheye_y < input_height)
-    )
+    valid &= (fisheye_x >= 0) & (fisheye_x < input_width) & (fisheye_y >= 0) & (fisheye_y < input_height)
 
     map_x, map_y = [np.zeros((output_height, output_width), dtype=np.float32) for _ in range(2)]
     map_x[valid] = fisheye_x[valid].astype(np.float32)
@@ -270,11 +265,7 @@ def create_dual_fisheye_to_equirectangular_map(
 
     # Mask for valid coordinates
     valid = (
-        (np.abs(z3d_back) > 1e-6)
-        & (final_x >= 0)
-        & (final_x < input_width)
-        & (final_y >= 0)
-        & (final_y < input_height)
+        (np.abs(z3d_back) > 1e-6) & (final_x >= 0) & (final_x < input_width) & (final_y >= 0) & (final_y < input_height)
     )
 
     map_x = np.zeros((output_height, output_width), dtype=np.float32)
@@ -301,20 +292,14 @@ def remap_frame(frame, map, out_size, interpolation=cv2.INTER_LINEAR, antialias=
     assert antialias in ["auto", "none", "gaussian", 2, 4, 8, 16]
 
     # Apply smoothing before downsampling if output size is smaller than input
-    if antialias in ["auto", "gaussian"] and (
-        out_size[0] < frame.shape[1] or out_size[1] < frame.shape[0]
-    ):
+    if antialias in ["auto", "gaussian"] and (out_size[0] < frame.shape[1] or out_size[1] < frame.shape[0]):
         import scipy.ndimage
 
         scale_x = frame.shape[1] / out_size[0]
         scale_y = frame.shape[0] / out_size[1]
         sigma = (max(0.01, scale_x / 2.0), max(0.01, scale_y / 2.0))
-        smoothed_frame = scipy.ndimage.gaussian_filter(
-            frame, sigma=sigma + ((0,) if frame.ndim == 3 else ())
-        )
-    elif isinstance(antialias, int) and (
-        out_size[0] < frame.shape[1] or out_size[1] < frame.shape[0]
-    ):
+        smoothed_frame = scipy.ndimage.gaussian_filter(frame, sigma=sigma + ((0,) if frame.ndim == 3 else ()))
+    elif isinstance(antialias, int) and (out_size[0] < frame.shape[1] or out_size[1] < frame.shape[0]):
         # Upscale the map and output size by smoothing factor if specified
         upscale = antialias
         up_out_size = (out_size[0] * upscale, out_size[1] * upscale)
@@ -334,9 +319,7 @@ def remap_frame(frame, map, out_size, interpolation=cv2.INTER_LINEAR, antialias=
         return cv2.resize(upsampled, out_size, interpolation=interpolation)
     else:
         smoothed_frame = frame
-    return cv2.remap(
-        smoothed_frame, *map, interpolation=interpolation, borderMode=cv2.BORDER_CONSTANT
-    )
+    return cv2.remap(smoothed_frame, *map, interpolation=interpolation, borderMode=cv2.BORDER_CONSTANT)
 
 
 def get_frame_indices(start_time, end_time, frames, fps, total_frames):
@@ -352,9 +335,7 @@ def get_frame_indices(start_time, end_time, frames, fps, total_frames):
     else:
         frame_indices = np.asarray(frames) + start_frame
         if frame_indices[-1] >= stop_frame:
-            raise ValueError(
-                f"Frame index {frame_indices[-1]} exceeds final frame ({stop_frame-1})."
-            )
+            raise ValueError(f"Frame index {frame_indices[-1]} exceeds final frame ({stop_frame - 1}).")
     return frame_indices
 
 
@@ -413,13 +394,9 @@ class PyAVVideoReader(VideoReader):
             frame = next(self.frame_iter)
             self.decoder_index = int(frame.pts * self.stream.time_base * self.fps)
             if frame.key_frame:
-                self.keyframe_interval = max(
-                    self.keyframe_interval, self.decoder_index - self.keyframe_index + 1
-                )
+                self.keyframe_interval = max(self.keyframe_interval, self.decoder_index - self.keyframe_index + 1)
                 self.keyframe_index = self.decoder_index
-        self.keyframe_interval = max(
-            self.keyframe_interval, self.decoder_index - self.keyframe_index + 1
-        )
+        self.keyframe_interval = max(self.keyframe_interval, self.decoder_index - self.keyframe_index + 1)
 
         assert self.decoder_index == frame_index
         return frame.to_ndarray(format="bgr24")
@@ -482,69 +459,11 @@ def iterate_video_frames(
     Raises:
         ValueError: If no video streams are found in the container, or if requested frame indices are out of bounds.
     """
-    frame_indices = get_frame_indices(
-        start_time, end_time, frames, video_reader.fps, video_reader.num_frames
-    )
+    frame_indices = get_frame_indices(start_time, end_time, frames, video_reader.fps, video_reader.num_frames)
     if pbar_f is not None:
         frame_indices = pbar_f(frame_indices)
     for i in frame_indices:
         yield i, video_reader.get_frame(i)
-
-
-def get_fisheye_to_perspective_converter(
-    input_size,
-    *,
-    fov_h=120.0,
-    fov_v=None,
-    yaw_pitch_roll=(0.0, 0.0, 0.0),
-    output_size=None,
-    output_aspect_ratio=None,
-    fisheye_radius_factor=DEFAULT_FISHEYE_RADIUS_FACTOR,
-    mode="perspective",
-):
-    """Returns a frame converter function from equidistant fisheye to perspective or equirectangular
-    projection.
-
-    Args:
-        input_size (tuple): (width, height) of the input image.
-        fov_h (float): Horizontal field of view in degrees (perspective mode).
-        fov_v (float, optional): Vertical field of view in degrees (perspective mode).
-        yaw_pitch_roll (tuple): (yaw, pitch, roll) in degrees, using yaw(Z), pitch(Y), roll(X).
-        output_size (tuple, optional): (width, height) of the output image.
-        output_aspect_ratio (float, optional): Output aspect ratio.
-        fisheye_radius_factor (float): Fisheye radius factor.
-        mode (str): 'perspective' (default) or 'equirectangular'.
-
-    Returns:
-        Callable: Function that converts a frame (np.ndarray) to the desired projection.
-    """
-    map_kwargs = dict(input_size=input_size, fisheye_radius_factor=fisheye_radius_factor)
-
-    if mode == "equirectangular":
-        map, output_size = create_dual_fisheye_to_equirectangular_map(**map_kwargs)
-        print(f"Dual fisheye to equirectangular: {output_size[0]}x{output_size[1]}")
-    else:
-        if fov_v is None:
-            fov_v = (
-                get_fov_v(output_aspect_ratio, fov_h)
-                if output_aspect_ratio is not None
-                else (
-                    get_fov_v(output_size[0] / output_size[1], fov_h)
-                    if output_size is not None
-                    else fov_h
-                )
-            )
-        map, output_size = create_fisheye_to_perspective_map(
-            output_size=output_size,
-            fov=(fov_h, fov_v),
-            yaw_pitch_roll=yaw_pitch_roll,
-            **map_kwargs,
-        )
-        print(f"Fisheye to perspective: {output_size[0]}x{output_size[1]}, FOV: {fov_h}°x{fov_v}°")
-
-    return partial(
-        remap_frame, map=map, out_size=output_size, interpolation=cv2.INTER_AREA, antialias=8
-    )
 
 
 def convert_video(
@@ -599,6 +518,31 @@ def convert_video(
             print(f"Conversion complete: {output_path}")
 
 
+def undistort_fisheye(image: np.ndarray, camera_matrix: np.ndarray, distortion_coeffs: np.ndarray) -> np.ndarray:
+    """
+    Undistort a fisheye image using camera calibration parameters
+
+    Args:
+        image: Input fisheye image (BGR format)
+        camera_matrix: 3x3 camera intrinsic matrix
+        distortion_coeffs: Fisheye distortion coefficients (4-element array)
+
+    Returns:
+        Undistorted image
+    """
+    height, width = image.shape[:2]
+
+    # Create undistortion maps
+    map_x, map_y = cv2.fisheye.initUndistortRectifyMap(
+        camera_matrix, distortion_coeffs, np.eye(3), camera_matrix, (width, height), cv2.CV_32FC1
+    )
+
+    # Apply undistortion
+    undistorted = cv2.remap(image, map_x, map_y, cv2.INTER_LINEAR)
+
+    return undistorted
+
+
 # Example usage
 if __name__ == "__main__":
     fisheye_radius_factor = 0.94
@@ -639,28 +583,3 @@ if __name__ == "__main__":
         "output/20231223_unit1_58_59_836/LRV_20241219_105926_01_145_equirectangular.mp4",
         frame_converter_f=partial(get_fisheye_to_perspective_converter, mode="equirectangular"),
     )
-
-
-def undistort_fisheye(image: np.ndarray, camera_matrix: np.ndarray, distortion_coeffs: np.ndarray) -> np.ndarray:
-    """
-    Undistort a fisheye image using camera calibration parameters
-    
-    Args:
-        image: Input fisheye image (BGR format)
-        camera_matrix: 3x3 camera intrinsic matrix
-        distortion_coeffs: Fisheye distortion coefficients (4-element array)
-        
-    Returns:
-        Undistorted image
-    """
-    height, width = image.shape[:2]
-    
-    # Create undistortion maps
-    map_x, map_y = cv2.fisheye.initUndistortRectifyMap(
-        camera_matrix, distortion_coeffs, np.eye(3), camera_matrix, (width, height), cv2.CV_32FC1
-    )
-    
-    # Apply undistortion
-    undistorted = cv2.remap(image, map_x, map_y, cv2.INTER_LINEAR)
-    
-    return undistorted
