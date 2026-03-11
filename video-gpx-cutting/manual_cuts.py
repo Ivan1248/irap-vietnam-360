@@ -1,6 +1,6 @@
 from typing import Dict, List
 
-from models import Segment, group_events_to_segments
+from models import Segment
 
 
 def parse_timecode_to_seconds(text: str) -> float:
@@ -15,7 +15,7 @@ def parse_timecode_to_seconds(text: str) -> float:
     parts = text.strip().split(":")
     if not parts or any(not p.isdigit() for p in parts):
         raise ValueError(f"Invalid timecode: {text!r}")
-    
+
     if len(parts) == 1:
         return float(parts[0])
     if len(parts) == 2:
@@ -57,25 +57,13 @@ def parse_pasted_table(text: str) -> Dict[str, List[float]]:
 
 
 def cuts_to_segments(
-    cut_seconds: List[float],
+    cut_times_s: List[float],
     duration_s: float,
 ) -> List[Segment]:
     """
-    Convert a list of manual cut times into padded, merged segments.
-
-    Uses the same semantics as the automatic GPX-based cutter:
-    [0..t1], [t1..t2], ..., [tn..duration], with optional padding and
-    a minimum segment duration.
+    Convert a list of manual cut times into [start, end) segments.
     """
     if duration_s <= 0.0:
         return []
-
-    # Clamp, sort, and deduplicate cuts within the video range
-    clamped = [max(0.0, min(duration_s, t)) for t in cut_seconds]
-    boundaries = sorted(set(clamped))
-
-    return group_events_to_segments(
-        event_times=boundaries,
-        duration_s=duration_s,
-        merge_overlaps=False,
-    )
+    boundaries = sorted({0.0, duration_s, *(t for t in cut_times_s if 0.0 < t < duration_s)})
+    return [Segment(start_s=s, end_s=e) for s, e in zip(boundaries, boundaries[1:])]

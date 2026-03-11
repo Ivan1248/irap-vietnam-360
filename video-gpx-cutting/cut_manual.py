@@ -12,11 +12,7 @@ from video_meta import compute_time_alignment, extract_video_meta
 
 
 def _parse_args(argv: List[str]) -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description=(
-            "Cut videos into segments using manually provided cut timestamps."
-        )
-    )
+    p = argparse.ArgumentParser(description=("Cut videos into segments using manually provided cut timestamps."))
     p.add_argument(
         "--input-dir",
         required=True,
@@ -37,18 +33,6 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
         type=float,
         default=5.0,
         help="Minimum segment duration in seconds (default: 5).",
-    )
-    p.add_argument(
-        "--time-padding-before-s",
-        type=float,
-        default=1.0,
-        help="Padding in seconds added before each segment (default: 1).",
-    )
-    p.add_argument(
-        "--time-padding-after-s",
-        type=float,
-        default=1.0,
-        help="Padding in seconds added after each segment (default: 1).",
     )
     p.add_argument(
         "--dry-run",
@@ -135,7 +119,7 @@ def main(argv: List[str]) -> int:
             continue
 
         segments = cuts_to_segments(
-            cut_seconds=cuts,
+            cut_times_s=cuts,
             duration_s=meta.duration_s,
         )
 
@@ -155,7 +139,7 @@ def main(argv: List[str]) -> int:
         try:
             keyframes = get_keyframe_timestamps(video_path)
             snapped_starts = [snap_to_previous_keyframe(seg.start_s, keyframes) for seg in segments]
-        except Exception as e: # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
             print(f"Keyframe detection failed for {stem!r}: {e}. Falling back to requested times.", file=sys.stderr)
             snapped_starts = [None] * len(segments)
 

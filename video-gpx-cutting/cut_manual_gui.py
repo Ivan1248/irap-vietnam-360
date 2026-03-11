@@ -181,7 +181,7 @@ class ManualCutsApp(tk.Tk):
                 continue
 
             segments = cuts_to_segments(
-                cut_seconds=cuts,
+                cut_times_s=cuts,
                 duration_s=meta.duration_s,
             )
 
@@ -266,10 +266,7 @@ class ManualCutsApp(tk.Tk):
 
             self.after(
                 0,
-                lambda s=stem, v=idx: (
-                    self._append_log(f"  Done: {s}"),
-                    self.progress.configure(value=v)
-                ),
+                lambda s=stem, v=idx: (self._append_log(f"  Done: {s}"), self.progress.configure(value=v)),
             )
 
         self.after(0, lambda: self._append_log("Batch cutting completed."))
