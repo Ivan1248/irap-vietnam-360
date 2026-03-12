@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la \"d:\\\\GoogleDrive\\\\Projects\\\\irap-vietnam-360\\\\inputs_webgis\"\" 2>/dev/null || find \"d:/GoogleDrive/Projects/irap-vietnam-360/inputs_webgis \" -type f)"
+    ]
+  }
+}

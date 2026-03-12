@@ -1,61 +1,136 @@
 # irap-vietnam-360
 
-**NOTE: This project has mostly moved here: https://github.com/Ivan1248/gyroflow**
+Video processing tools for road surveys.
 
-This project converts fisheye video sequences to perspective projection videos or images using GPS track data, saving one image every distance step along the path.
+**Requirements:** Python 3.10+, `ffmpeg` and `ffprobe` on `PATH`.
 
-## Usage
 
-```sh
-python -m irap_vietnam_360.generate_image_dataset input output --distance_step 10 --fov_h 127 --output_width 384 --output_height 288 --pitch 12
+## Installation
+
+```bash
+pip install -e .
 ```
 
-- `input`: Root directory containing subfolders, each with a fisheye video (`.insv`) and a corresponding GPS track file (`.gpx`).
-- `output`: Directory where extracted images will be saved, mirroring the input folder structure.
-- `--distance_step`: Distance in meters between extracted frames (default: 10).
-- `--fov_h`: Horizontal field of view for the perspective output, in degrees (default: 127).
-- `--output_width`: Output image width in pixels (default: 384).
-- `--output_height`: Output image height in pixels (default: 288).
-- `--yaw`: Horizontal rotation angle (in degrees) of the virtual camera (default: 0.0).
-- `--pitch`: Vertical rotation angle (in degrees) of the virtual camera; positive tilts the view upward (default: 0.0).
-- `--roll`: Optical axis rotation angle (in degrees) of the virtual camera (default: 0.0).
-- `--fisheye_radius_factor`: Fisheye radius as a fraction of the image radius, for tuning the effective fisheye circle (default: 0.94).
+This registers the console-script entry points so they can be run from anywhere.
 
-### Input directory structure
 
-```
-input/
-  ├── 20231223_unit1_58_59_836/
-  │     ├── VID_20241219_105926_00_145.insv   # Fisheye video file
-  │     ├── activity_17792202410.gpx          # GPS track file
-  │     └── ... (other files)
-  ├── 20241210_unit1_32/
-  │     └── ...
-  └── ...
+## Cut list format
+
+The tools tools use following text format. One video per line, the filename stem followed by timestamps:
+
+```text
+VID_20241210_172830_00_003 08:45
+VID_20241210_105715_00_015 00:13 02:06 03:30
 ```
 
-Each subfolder represents a sequence and must contain one `.insv` video and one `.gpx` file.
+- **Timestamps:** `ss`, `mm:ss`, or `hh:mm:ss`
+- **Output:** N cut points → N+1 segments
+- **Warnings:** Lines with missing or invalid timestamps produce warnings and are skipped
+- **Directory structure:** Input subdirectories are preserved in output
 
-### Output directory structure
 
+---
+
+## `irap_video_cutting.gpx` — Cut MP4 + GPX
+
+Cuts video files at manually specified timestamps. If a `.gpx` file exists alongside the video, it's cut as well.
+
+**Inputs:** `.mp4` (+ optional `.gpx`)
+
+### CLI
+
+```bash
+cut-manual \
+  --input-dir  /path/to/videos \
+  --output-dir /path/to/output \
+  --list-file  cuts.txt \
+  [--dry-run]
+
+# or without installing:
+python -m irap_video_cutting.gpx --input-dir ... --output-dir ... --list-file cuts.txt
 ```
-output/
-  ├── 20231223_unit1_58_59_836/
-  │     ├── 0000000.png   # Extracted perspective images
-  │     ├── 0000127.png
-  │     └── ...
-  ├── 20241210_unit1_32/
-  │     └── ...
-  └── ...
+
+Omit `--list-file` to read the cut list from stdin.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--input-dir` | *(required)* | Directory tree containing the input files |
+| `--output-dir` | *(required)* | Destination directory |
+| `--list-file` | stdin | Text file with cut definitions |
+| `--dry-run` | off | Print segment boundaries without writing files |
+| `--clear-output` | off | Clear the output directory before processing |
+
+### GUI
+
+```bash
+cut-manual-gui
+
+# or without installing:
+python -m irap_video_cutting.gpx
 ```
 
-Each output subfolder matches the input and contains PNG images named by their frame index, corresponding to the extracted frames at each distance step.
+1. Select **Input directory** and **Output directory**.
+2. Paste the cut list into the text box.
+3. Click **Preview** to verify the parsed stems and cut times.
+4. Click **Run** to start processing.
+   - Check **Clear output directory before processing** to wipe the output
+     folder first (requires confirmation).
 
-## To do
+---
 
-- The synchronization between video duration and GPS track duration is currently handled by a simple rescaling hack. This should be improved for better alignment.
-- The camera usually does not point exactly in the movement direction and sometimes points backwards. Add recognition of the road direction or the movement direction (including whether the camera points backward) or use gyroscope measurements?
-  - The synchronization of frame orientations with frames might not be perfect (there is a few more orientations than frames).
-  - Subtraction of estimated orientations does not work correctly.
-- Check anti-aliasing and interpolation.
-- Check the perspective conversion code.
+## `irap_video_cutting.webgis` — Cut MP4 + JSON + GeoJSON + SQL
+
+Cuts WebGIS video sets (video + GPS tracks + database records) at manually specified timestamps. Produces matching segments with all sidecar files.
+
+**Inputs:** Four files per video set with the same stem:
+- `.mp4` — video file
+- `.json` — GPS track with video-local timestamps
+- `.geojson` — GPS track as GeoJSON LineString (WGS84)
+- `.sql` — PostgreSQL INSERT statement (EPSG:3857)
+
+**Outputs:** Numbered segments with all sidecar files (timestamps re-zeroed)
+
+### CLI
+
+```bash
+cut-webgis \
+  --input-dir  /path/to/video-sets \
+  --output-dir /path/to/output \
+  --list-file  cuts.txt \
+  [--dry-run]
+
+# or without installing:
+python -m irap_video_cutting.webgis --input-dir ... --output-dir ... --list-file cuts.txt
+```
+
+Omit `--list-file` to read the cut list from stdin.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--input-dir` | *(required)* | Directory tree containing the input files |
+| `--output-dir` | *(required)* | Destination directory |
+| `--list-file` | stdin | Text file with cut definitions |
+| `--dry-run` | off | Print segment boundaries without writing files |
+| `--clear-output` | off | Clear the output directory before processing |
+
+### GUI
+
+```bash
+cut-webgis-gui
+
+# or without installing:
+python -m irap_video_cutting.webgis
+```
+
+1. Select **Input directory** and **Output directory**.
+2. Paste the cut list into the text box.
+3. Click **Preview** to verify the parsed stems and cut times.
+4. Click **Run** to start processing.
+   - Check **Clear output directory before processing** to wipe the output
+     folder first (requires confirmation).
+
+---
+
+## For developers
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for implementation details, module responsibilities, and processing workflows.

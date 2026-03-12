@@ -1,3 +1,6 @@
+> **Superseded.** This standalone script directory has been replaced by the
+> `irap_video_cutting.gpx` subpackage. See the [root README](../README.md).
+
 ## Video cutting tools
 
 Cut videos (and optional paired GPX tracks) at manually specified timestamps.
@@ -7,7 +10,7 @@ Run all scripts from inside `video-gpx-cutting/`. Requires Python 3.10+ and `ffm
 
 ### Input and output format
 
-Cutting input format: One video per line — filename stem followed by cut points in `ss`, `mm:ss` or `hh:mm:ss`:
+Cutting input format: One video per line – filename stem followed by cut points in `ss`, `mm:ss` or `hh:mm:ss`:
 ```text
 VID_20241210_172830_00_003  08:45
 VID_20241210_105715_00_015  00:13  02:06  03:30
