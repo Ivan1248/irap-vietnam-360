@@ -9,7 +9,7 @@ Video processing tools for road surveys.
 pip install -e .
 ```
 
-This registers the console-script entry points so they can be run from anywhere.
+This registers the console-script entry points so they can be run from anywhere. Alternatively, you can run the tools without installation using `python -m irap_video_cutting.gpx` or `python -m irap_video_cutting.webgis`.
 
 
 ## Cut list format
@@ -38,17 +38,14 @@ Cuts video files at manually specified timestamps. If a `.gpx` file exists along
 ### CLI
 
 ```bash
-cut-manual \
+python -m irap_video_cutting.gpx \
   --input-dir  /path/to/videos \
   --output-dir /path/to/output \
   --list-file  cuts.txt \
-  [--dry-run]
-
-# or without installing:
-python -m irap_video_cutting.gpx --input-dir ... --output-dir ... --list-file cuts.txt
+  [--dry-run] [--clear-output]
 ```
 
-Omit `--list-file` to read the cut list from stdin.
+Omit `--list-file` to read the cut list from stdin. After installation, `cut-manual` is also available.
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -91,17 +88,14 @@ Cuts WebGIS video sets (video + GPS tracks + database records) at manually speci
 ### CLI
 
 ```bash
-cut-webgis \
+python -m irap_video_cutting.webgis \
   --input-dir  /path/to/video-sets \
   --output-dir /path/to/output \
   --list-file  cuts.txt \
-  [--dry-run]
-
-# or without installing:
-python -m irap_video_cutting.webgis --input-dir ... --output-dir ... --list-file cuts.txt
+  [--dry-run] [--clear-output]
 ```
 
-Omit `--list-file` to read the cut list from stdin.
+Omit `--list-file` to read the cut list from stdin. After installation, `cut-webgis` is also available.
 
 | Option | Default | Description |
 |--------|---------|-------------|
