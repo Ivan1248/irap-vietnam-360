@@ -9,7 +9,9 @@ Video processing tools for road surveys.
 pip install -e .
 ```
 
-This registers the console-script entry points so they can be run from anywhere. Alternatively, you can run the tools without installation using `python -m irap_video_cutting.gpx` or `python -m irap_video_cutting.webgis`.
+This registers the console-script entry points so they can be run from anywhere. 
+
+Alternatively, the tools can be run without installation using `python -m irap_video_cutting.gpx` or `python -m irap_video_cutting.webgis`.
 
 
 ## Cut list format
@@ -29,7 +31,7 @@ VID_20241210_105715_00_015 00:13 02:06 03:30
 
 ---
 
-## `irap_video_cutting.gpx` — Cut MP4 + GPX
+## `irap_video_cutting.gpx` – Cut MP4 + GPX
 
 Cuts video files at manually specified timestamps. If a `.gpx` file exists alongside the video, it's cut as well.
 
@@ -73,15 +75,15 @@ python -m irap_video_cutting.gpx
 
 ---
 
-## `irap_video_cutting.webgis` — Cut MP4 + JSON + GeoJSON + SQL
+## `irap_video_cutting.webgis` – Cut MP4 + JSON + GeoJSON + SQL
 
 Cuts WebGIS video sets (video + GPS tracks + database records) at manually specified timestamps. Produces matching segments with all sidecar files.
 
 **Inputs:** Four files per video set with the same stem:
-- `.mp4` — video file
-- `.json` — GPS track with video-local timestamps
-- `.geojson` — GPS track as GeoJSON LineString (WGS84)
-- `.sql` — PostgreSQL INSERT statement (EPSG:3857)
+- `.mp4` – video file
+- `.json` – GPS track with video-local timestamps
+- `.geojson` – GPS track as GeoJSON LineString (WGS84)
+- `.sql` – PostgreSQL INSERT statement (EPSG:3857)
 
 **Outputs:** Numbered segments with all sidecar files (timestamps re-zeroed)
 
