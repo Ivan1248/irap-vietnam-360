@@ -1,5 +1,3 @@
-# irap-vietnam-360
-
 Video processing tools for road surveys.
 
 **Requirements:** Python 3.10+, `ffmpeg` and `ffprobe` on `PATH`.
